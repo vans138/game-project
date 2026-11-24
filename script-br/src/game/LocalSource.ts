@@ -1,44 +1,96 @@
+// 把 RunEngine 包装成 GameSource 接口：GameScreen 只认 GameView + GameSource。
+// 未来联网版只需把 createLocalSource 换成 createRemoteSource，UI 不动。
+
 import type { GameSource, GameView } from './GameView'
+import { SCRIPT_1 } from './script/script1'
+import { RunEngine, type Snapshot } from './engine/RunEngine'
+import type { Role } from './script/types'
 
 const PLACEHOLDER_BG =
   'linear-gradient(160deg, #1f2a44 0%, #33507a 50%, #6a8bbf 100%)'
 
-const NARRATIVES = [
-  '开学第一天。你站在校门口，看着陌生的校园，心里清楚——这三年，会不止一次重来。',
-  '第一个月过去了。教室里的人渐渐熟悉，但你隐约觉得，有些事并不像表面那样简单。',
-  '某天深夜，你在旧教学楼看见一个不该出现的身影。',
-  '又一次轮回的痕迹开始显现。这一次，你想走得更远。',
-]
+/** 每学年、月对应不同背景（MVP 用渐变示意，将来换图片 URL） */
+function backgroundFor(year: number, month: number): string {
+  const palettes: Record<number, string> = {
+    1: 'linear-gradient(160deg, #24324f 0%, #3c5a86 60%, #7aa0cf 100%)', // 春/秋清爽
+    2: 'linear-gradient(160deg, #3a2a44 0%, #6a4a6e 55%, #b98ec2 100%)', // 紫调
+    3: 'linear-gradient(160deg, #1a1a24 0%, #3a3a52 55%, #7777a0 100%)', // 沉暗收尾
+  }
+  return palettes[year] ?? PLACEHOLDER_BG
+}
 
-function narrativeFor(month: number): string {
-  return NARRATIVES[(month - 1) % NARRATIVES.length]
+/** 把引擎 Snapshot 转成 UI 用的 GameView */
+function toView(s: Snapshot, prevAffinityText?: string): GameView {
+  let narrative = s.narrative
+  if (prevAffinityText) narrative = prevAffinityText + '\n\n' + narrative
+  return {
+    month: s.monthIndex,
+    background: backgroundFor(s.year, s.month),
+    narrative,
+    choices: s.choices.map((c) => ({ id: c.id, text: c.text })),
+    finished: s.finished,
+    outcomeTitle: s.outcomeTitle,
+    outcomeNarrative: s.outcomeNarrative,
+  }
 }
 
 export function createLocalSource(): GameSource {
-  let month = 1
+  // 延迟创建引擎：先让 UI 选角色
+  let engine: RunEngine | null = null
+  let lastSnap: Snapshot | null = null
   const listeners = new Set<(view: GameView) => void>()
 
-  function buildView(): GameView {
+  // 角色选择阶段：给定一份可用角色列表，player 选一个后 engine 开跑
+  function startWithRole(role: Role) {
+    engine = new RunEngine(SCRIPT_1, role)
+    lastSnap = engine.snapshot()
+    engine.subscribe((s) => {
+      lastSnap = s
+      const view = toView(s)
+      listeners.forEach((fn) => fn(view))
+    })
+    const view = toView(lastSnap)
+    listeners.forEach((fn) => fn(view))
+  }
+
+  /** 未开局时展示角色选择 */
+  function rosterView(): GameView {
     return {
-      month,
+      month: 0,
       background: PLACEHOLDER_BG,
-      narrative: narrativeFor(month),
-      choices: [
-        { id: 'continue', text: '继续' },
-        { id: 'observe', text: '先观察四周' },
-      ],
+      narrative:
+        '【轮回校园 · 选择你的角色】\n\n' +
+        SCRIPT_1.roles
+          .map((r) => `· ${r.name}｜表面任务：${r.surfaceTask}`)
+          .join('\n') +
+        '\n\n选定后，你将带着一种"身份"走进这三年。',
+      choices: SCRIPT_1.roles.map((r) => ({ id: `role:${r.id}`, text: r.name })),
+      finished: false,
     }
   }
 
   return {
     getView() {
-      return buildView()
+      if (!engine) return rosterView()
+      return toView(lastSnap ?? engine.snapshot())
     },
-    choose(_choiceId: string) {
-      month += 1
-      const view = buildView()
-      listeners.forEach((fn) => fn(view))
-      return view
+    choose(choiceId: string) {
+      // 角色选择阶段
+      if (!engine) {
+        if (choiceId.startsWith('role:')) {
+          const roleId = choiceId.slice('role:'.length)
+          const role = SCRIPT_1.roles.find((r) => r.id === roleId)
+          if (role) {
+            startWithRole(role)
+            return lastSnap ? toView(lastSnap) : rosterView()
+          }
+        }
+        return rosterView()
+      }
+      // 已开局：交给引擎
+      const snap = engine.choose(choiceId)
+      lastSnap = snap
+      return toView(snap)
     },
     subscribe(listener) {
       listeners.add(listener)

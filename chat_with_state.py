@@ -99,9 +99,23 @@ def extract_saves(text):
     clean = SAVE_RE.sub("", text).strip()
     return clean, saves
 
+# ---------- 扫描/喂入配置 ----------
+AUTO_SCAN_DIRS = [
+    "script-br/src",
+]
+SCAN_EXTS = (".ts", ".tsx", ".js", ".jsx", ".css", ".json", ".md")
+SCAN_SKIP_DIRS = {"node_modules", "dist", "build", ".git", "__pycache__"}
 
+FEED_FILES = [
+    "code/src/game/types.ts",
+    "code/src/game/script.campus.ts",
+    "code/src/engine.ts",
+]
+FEED_MAX_CHARS = 120_000
 # ---------- System Prompt ----------
 SYSTEM_PROMPT = """你是一位资深独立游戏设计师兼全栈游戏工程师，有 10 年经验。
+
+
 
 【工作方式】严格分阶段，不要跳步：
 阶段1 设计沟通：了解雏形（核心玩法/平台/美术/规模），每次最多问3个问题，打磨核心循环与MVP，输出《GDD》，我确认后进入下一阶段。
@@ -125,6 +139,9 @@ SYSTEM_PROMPT = """你是一位资深独立游戏设计师兼全栈游戏工程�
 """
 
 
+
+
+
 def build_history():
     ctx = SYSTEM_PROMPT
     for label, path in [("当前项目状态", STATE_FILE), ("已确认的GDD", GDD_FILE),
@@ -133,14 +150,29 @@ def build_history():
         if c:
             ctx += f"\n\n【{label}】\n{c}"
 
-    # 递归列出 code/ 下的文件（只列路径，不带内容，控制上下文体积）
-    rel_files = []
-    for root, _dirs, files in os.walk(CODE_DIR):
-        for fn in files:
-            full = os.path.join(root, fn)
-            rel_files.append(os.path.relpath(full, BASE_DIR).replace("\\", "/"))
-    if rel_files:
-        ctx += "\n\n【已有代码文件】" + ", ".join(sorted(rel_files))
+    fed_files = []
+    for scan_dir in AUTO_SCAN_DIRS:
+        root_dir = os.path.join(BASE_DIR, scan_dir)
+        if not os.path.isdir(root_dir):
+            ctx += f"\n\n【扫描目录 {scan_dir}】（不存在，跳过）"
+            continue
+        for cur, dirs, files in os.walk(root_dir):
+            dirs[:] = [d for d in dirs if d not in SCAN_SKIP_DIRS]
+            for fn in sorted(files):
+                if not fn.endswith(SCAN_EXTS):
+                    continue
+                full = os.path.join(cur, fn)
+                rel = os.path.relpath(full, BASE_DIR).replace("\\", "/")
+                try:
+                    body = load_file(full)
+                except Exception as e:
+                    ctx += f"\n\n【文件 {rel}】（读取失败: {e}）"
+                    continue
+                fed_files.append(rel)
+                ctx += f"\n\n【文件 {rel}】\n```\n{body}\n```"
+
+    if fed_files:
+        ctx += f"\n\n【本次已喂 {len(fed_files)} 个文件】"
 
     return [{"role": "system", "content": ctx}]
 
