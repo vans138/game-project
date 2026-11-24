@@ -49,18 +49,43 @@ def load_file(path, default=""):
     return open(path, encoding="utf-8").read() if os.path.exists(path) else default
 
 def save_file(path, content):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
     open(path, "w", encoding="utf-8").write(content)
     print(f"  [已保存] {os.path.relpath(path, BASE_DIR)}")
 
+# ---------- SAVE 块解析（已修复） ----------
+# 只匹配“独占一行”的标记：^...$ + MULTILINE
+# 路径只允许 ASCII 安全字符，杜绝中文/省略号/反引号/空格导致的 WinError 123
+SAVE_RE = re.compile(
+    r'^<<<SAVE:([A-Za-z0-9_./\-]+)>>>[ \t]*\r?\n'
+    r'(.*?)'
+    r'^<<<END>>>[ \t]*$',
+    re.MULTILINE | re.DOTALL
+)
+
 def extract_saves(text):
-    pattern = r"<<<SAVE:(.+?)>>>\n(.*?)\n<<<END>>>"
-    saves = re.findall(pattern, text, re.DOTALL)
-    clean = re.sub(pattern, "", text, flags=re.DOTALL).strip()
-    if saves:
-        for path, content in saves:
-            save_file(os.path.join(BASE_DIR, path.strip()), content.strip())
-        git_commit_push("AI: 更新 " + ", ".join(p for p, _ in saves))
+    saves = []
+    for m in SAVE_RE.finditer(text):
+        path = m.group(1).strip()
+        content = m.group(2)
+        # 兜底校验：非空、无目录穿越
+        if not path or '..' in path:
+            continue
+        saves.append((path, content))
+
+    # 先全部校验完，再统一写盘 + push，避免写一半炸掉
+    written = []
+    for path, content in saves:
+        full = os.path.join(BASE_DIR, path)
+        save_file(full, content.strip())
+        written.append(path)
+
+    if written:
+        git_commit_push("AI: 更新 " + ", ".join(written))
+
+    clean = SAVE_RE.sub("", text).strip()
     return clean, saves
 
 # ---------- System Prompt ----------
@@ -76,6 +101,7 @@ SYSTEM_PROMPT = """你是一位资深独立游戏设计师兼全栈游戏工程�
 - 产出技术方案时用 <<<SAVE:tech_spec.md>>> ... <<<END>>> 包裹。
 - 产出每个代码文件时用 <<<SAVE:code/文件名>>> ... <<<END>>> 包裹（一个文件一个块）。
 - 普通对话不要用这个标记。
+- 标记必须【独占一行】，路径只能是英文/数字/下划线/斜杠/点/短横线，不要写中文路径，不要在行内举例时写出完整标记。
 
 【原则】不确定就问；MVP优先；代码要能直接跑；中文沟通。"""
 

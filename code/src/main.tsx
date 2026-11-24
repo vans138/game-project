@@ -1,11 +1,10 @@
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import App from './App';
-import './styles.css';
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App.tsx'
 
-// React 挂载入口
+// 应用挂载入口
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />
   </React.StrictMode>
-);
+)
