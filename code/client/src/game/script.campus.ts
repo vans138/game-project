@@ -1,26 +1,85 @@
 // ============================================================
-// 剧本：校园 · 1 年精简版
+// 剧本：校园 · 1 年精简版（自包含版本，不依赖 types.ts）
 // 目的：跑通"事件 → 选项 → 效果 → 时间轮 → 结局"最小闭环。
 // 规模：10 个月 / 2 个私人目标 / 3 个 NPC / 固定+随机+同框+学习
 //       / 2 个结局。
 // 后续扩三年：把 months 补到 30，events 增加即可。
 // ============================================================
-import type { ScriptDef } from './types';
+
+// ---------- 类型（自包含，放在本文件顶部）----------
+
+export interface Condition {
+  hasIdentity?: string;
+  affinityAtLeast?: [string, number];
+  flag?: string;
+  goalAtLeast?: [string, number];
+}
+
+export type Effect =
+  | { type: 'affinity'; npc: string; value: number }
+  | { type: 'unlock'; target: string }
+  | { type: 'flag'; target: string }
+  | { type: 'goalProgress'; goal: string; value: number };
+
+export interface ChoiceDef {
+  id: string;
+  text: string;
+  require?: Condition;
+  effects?: Effect[];
+}
+
+export interface EventDef {
+  id: string;
+  kind: 'fixed' | 'random' | 'samebox' | 'study';
+  background: string;
+  text: string;
+  choices: ChoiceDef[];
+}
+
+export interface MonthDef {
+  index: number;
+  fixedEventId?: string;
+  randomPool?: string[];
+  silentEventId?: string;
+}
+
+export interface GoalDef {
+  id: string;
+  title: string;
+  target: number;
+}
+
+export interface OutcomeDef {
+  id: string;
+  title: string;
+  text: string;
+  require?: { totalGoalAtLeast?: number; flag?: string };
+}
+
+export interface ScriptDef {
+  id: string;
+  meta: { title: string; era: string; place: string };
+  startBackground: string;
+  months: MonthDef[];
+  events: EventDef[];
+  goals: GoalDef[];
+  outcomes: OutcomeDef[];
+}
+
+// ---------- 剧本数据 ----------
 
 export const campusScript: ScriptDef = {
   id: 'campus-year1',
   meta: { title: '校园·第一年', era: '现代', place: '临江一中' },
   startBackground: '/bg/classroom.jpg',
 
-  // 私有目标：全玩家共用一组（MVP 简化，不区分角色）
   goals: [
     { id: 'g_secret', title: '查清旧校舍传闻的真相', target: 3 },
     { id: 'g_bond',   title: '和至少一个人建立真正的关系', target: 3 },
   ],
 
-  // 月回合表：1~10 月
   months: [
-    { index: 1, fixedEventId: 'e_meet',   silentEventId: 'e_study' },
+    { index: 1, fixedEventId: 'e_meet', silentEventId: 'e_study' },
     { index: 2, randomPool: ['e_rumor_a', 'e_rumor_b'], silentEventId: 'e_study' },
     { index: 3, fixedEventId: 'e_samebox_1', silentEventId: 'e_study' },
     { index: 4, randomPool: ['e_rumor_a', 'e_rumor_b'], silentEventId: 'e_study' },
@@ -33,18 +92,16 @@ export const campusScript: ScriptDef = {
   ],
 
   events: [
-    // ---------- 学习/静默旁白 ----------
     {
       id: 'e_study',
       kind: 'study',
       background: '/bg/classroom.jpg',
       text: '这个月没什么特别的事。\n你照常上课、自习，日子像静止的水。',
       choices: [
-        { id: 'study_ok', text: '继续', effects: [{ type: 'goalProgress', goal: 'g_bond', value: 0 }] },
+        { id: 'study_ok', text: '继续', effects: [] },
       ],
     },
 
-    // ---------- 固定：相识 ----------
     {
       id: 'e_meet',
       kind: 'fixed',
@@ -68,7 +125,6 @@ export const campusScript: ScriptDef = {
       ],
     },
 
-    // ---------- 随机：传闻 A ----------
     {
       id: 'e_rumor_a',
       kind: 'random',
@@ -92,7 +148,6 @@ export const campusScript: ScriptDef = {
       ],
     },
 
-    // ---------- 随机：传闻 B ----------
     {
       id: 'e_rumor_b',
       kind: 'random',
@@ -115,7 +170,6 @@ export const campusScript: ScriptDef = {
       ],
     },
 
-    // ---------- 同框关系事件 1 ----------
     {
       id: 'e_samebox_1',
       kind: 'samebox',
@@ -146,7 +200,6 @@ export const campusScript: ScriptDef = {
       ],
     },
 
-    // ---------- 固定：期中 ----------
     {
       id: 'e_midterm',
       kind: 'fixed',
@@ -170,7 +223,6 @@ export const campusScript: ScriptDef = {
       ],
     },
 
-    // ---------- 同框关系事件 2 ----------
     {
       id: 'e_samebox_2',
       kind: 'samebox',
@@ -195,7 +247,6 @@ export const campusScript: ScriptDef = {
       ],
     },
 
-    // ---------- 固定：终局前夜 ----------
     {
       id: 'e_finale',
       kind: 'fixed',
@@ -219,7 +270,6 @@ export const campusScript: ScriptDef = {
       ],
     },
 
-    // ---------- 固定：学年末 ----------
     {
       id: 'e_grad',
       kind: 'fixed',
@@ -231,7 +281,6 @@ export const campusScript: ScriptDef = {
     },
   ],
 
-  // 结局：表驱动，按"目标总进度"和 flag 判定，先到先匹配
   outcomes: [
     {
       id: 'o_truth',
