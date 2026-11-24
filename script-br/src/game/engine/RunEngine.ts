@@ -1,6 +1,5 @@
-// 局内运行引擎：持有当前局状态，按月份推进，产出 Snapshot。
-// 单机权威实现；推进语义：有事件走选项，无事件月用 "__advance__" 指令推进。
-// 修正：choose 对 "__advance__" 与无事件月统一处理，避免死循环。
+// 局内引擎：月推进、事件、效果结算、结局判定。
+// 本轮新增：好感总封顶（affinityCap）约束，超封顶按比例裁回；Snapshot 附带好感面板数据。
 
 import type { Script, Role } from '../script/types'
 import { evalCondition, applyEffects, type EvalContext } from './evaluator'
@@ -28,9 +27,12 @@ export interface Snapshot {
   finished: boolean
   outcomeTitle?: string
   outcomeNarrative?: string
+  /** 好感面板：按当前好感降序排列 */
+  affinityPanel: { id: string; value: number }[]
+  affinityTotal: number
+  affinityCap: number
 }
 
-/** 特殊推进指令（UI 无选项时发它） */
 export const ADVANCE = '__advance__'
 
 export class RunEngine {
@@ -75,45 +77,45 @@ export class RunEngine {
     const md = this.script.timeline.find((m) => m.index === this.state.monthIndex)
     if (!md) return { md: undefined, ev: undefined }
     if (md.fixedEvent) {
-      const ev = this.script.events.find((e) => e.id === md.fixedEvent)
-      return { md, ev }
+      return { md, ev: this.script.events.find((e) => e.id === md.fixedEvent) }
     }
     if (md.randomPool && md.randomPool.length) {
       const pick = md.randomPool[(this.state.monthIndex * 7) % md.randomPool.length]
-      const ev = this.script.events.find((e) => e.id === pick)
-      return { md, ev }
+      return { md, ev: this.script.events.find((e) => e.id === pick) }
     }
     return { md, ev: undefined }
   }
 
   snapshot(): Snapshot {
     const md = this.script.timeline.find((m) => m.index === this.state.monthIndex)
+    const panel = Object.entries(this.state.player.affinity)
+      .map(([id, value]) => ({ id, value }))
+      .sort((a, b) => b.value - a.value)
+    const total = panel.reduce((s, p) => s + Math.max(0, p.value), 0)
+
     if (!md) {
       return {
         monthIndex: this.state.monthIndex, year: 3, month: 10,
         narrative: this.lastOutcomeNarrative ?? '三年走完了。',
         choices: [], finished: true,
-        outcomeTitle: this.lastOutcomeTitle,
-        outcomeNarrative: this.lastOutcomeNarrative,
+        outcomeTitle: this.lastOutcomeTitle, outcomeNarrative: this.lastOutcomeNarrative,
+        affinityPanel: panel, affinityTotal: total, affinityCap: this.script.affinityCap,
       }
     }
 
     if (this.state.finished) {
       return {
-        monthIndex: this.state.monthIndex,
-        year: md.year, month: md.month,
+        monthIndex: this.state.monthIndex, year: md.year, month: md.month,
         narrative: this.lastOutcomeNarrative ?? '三年走完了。',
         choices: [], finished: true,
-        outcomeTitle: this.lastOutcomeTitle,
-        outcomeNarrative: this.lastOutcomeNarrative,
+        outcomeTitle: this.lastOutcomeTitle, outcomeNarrative: this.lastOutcomeNarrative,
+        affinityPanel: panel, affinityTotal: total, affinityCap: this.script.affinityCap,
       }
     }
 
     const { ev } = this.currentEvent()
     const role = this.role()
-    const head: string[] = [`第 ${md.year} 学年 · 第 ${md.month} 月`]
-    if (role.surfaceTask) head.push(`〔表面任务〕${role.surfaceTask}`)
-
+    const head = [`第 ${md.year} 学年 · 第 ${md.month} 月`, `〔表面任务〕${role.surfaceTask}`]
     let narrative = head.join('\n') + '\n\n'
     let choices: { id: string; text: string }[] = []
 
@@ -128,18 +130,16 @@ export class RunEngine {
     }
 
     return {
-      monthIndex: this.state.monthIndex,
-      year: md.year, month: md.month,
+      monthIndex: this.state.monthIndex, year: md.year, month: md.month,
       narrative, choices, finished: false,
+      affinityPanel: panel, affinityTotal: total, affinityCap: this.script.affinityCap,
     }
   }
 
   choose(choiceId: string): Snapshot {
     if (this.state.finished) return this.snapshot()
-
     const { ev } = this.currentEvent()
 
-    // 无事件月，或显式推进指令：直接进入下一月
     if (!ev || choiceId === ADVANCE) {
       this.advance()
       const s = this.snapshot()
@@ -150,9 +150,11 @@ export class RunEngine {
     const choice = ev.choices.find((c) => c.id === choiceId)
     if (!choice) return this.snapshot()
 
-    // 用可变上下文结算，再写回
     const ctx = this.ctx()
     const logs = applyEffects(choice.effects, ctx)
+    // 好感总封顶约束：若正向总和超 cap，等比裁回；负值不裁
+    this.enforceAffinityCap(ctx.affinity)
+
     this.state.player.identityTags = ctx.identityTags
     this.state.player.affinity = ctx.affinity
     this.state.player.flags = ctx.flags
@@ -163,6 +165,18 @@ export class RunEngine {
     if (logs.length) s.narrative = logs.join('\n') + '\n\n' + s.narrative
     this.emit(s)
     return s
+  }
+
+  /** 好感正向总量超封顶时，按比例裁剪到 cap */
+  private enforceAffinityCap(aff: Record<string, number>) {
+    const cap = this.script.affinityCap
+    let positiveSum = 0
+    for (const k of Object.keys(aff)) positiveSum += Math.max(0, aff[k])
+    if (positiveSum <= cap) return
+    const ratio = cap / positiveSum
+    for (const k of Object.keys(aff)) {
+      if (aff[k] > 0) aff[k] = Math.floor(aff[k] * ratio)
+    }
   }
 
   private advance() {
@@ -184,7 +198,6 @@ export class RunEngine {
     }
     const progress = this.state.player.goalProgress[goal.id] ?? 0
     const ratio = Math.min(1, progress / goal.target)
-
     const ctx = this.ctx()
     for (const o of this.script.outcomes) {
       const condOk = evalCondition(o.require, ctx)
