@@ -99,12 +99,13 @@ def extract_saves(text):
     clean = SAVE_RE.sub("", text).strip()
     return clean, saves
 
-# ---------- 扫描/喂入配置 ----------
-AUTO_SCAN_DIRS = [
-    "script-br/src",
-]
-SCAN_EXTS = (".ts", ".tsx", ".js", ".jsx", ".css", ".json", ".md")
-SCAN_SKIP_DIRS = {"node_modules", "dist", "build", ".git", "__pycache__"}
+# 读的范围 = BASE_DIR 整个项目（与 SAVE 可写范围一致）
+AUTO_SCAN_DIRS = ["."]
+SCAN_EXTS = (".ts", ".tsx", ".js", ".jsx", ".css", ".json", ".md", ".html", ".py")
+SCAN_SKIP_DIRS = {
+    "node_modules", "dist", "build", ".git", "__pycache__",
+    ".venv", "venv", "out", ".next", "coverage",
+}
 
 FEED_FILES = [
     "code/src/game/types.ts",
@@ -163,6 +164,9 @@ def build_history():
                     continue
                 full = os.path.join(cur, fn)
                 rel = os.path.relpath(full, BASE_DIR).replace("\\", "/")
+                # 三个 md 已在上方单独喂，跳过避免重复
+                if rel in ("project_state.md", "GDD.md", "tech_spec.md"):
+                    continue
                 try:
                     body = load_file(full)
                 except Exception as e:
