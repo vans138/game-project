@@ -1,0 +1,102 @@
+/* 布局：背景铺满，中间月数与选项，下方文本框。适配手机（100dvh + clamp）。 */
+html, body, #root {
+  margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000;
+  font-family: system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+.g-root { position: relative; width: 100vw; height: 100vh; height: 100dvh; overflow: hidden; }
+.g-bg {
+  position: absolute; inset: 0;
+  background-size: cover !important; background-position: center center !important;
+  background-repeat: no-repeat !important; z-index: 0;
+  transition: background 0.4s ease;
+}
+.g-middle {
+  position: absolute; inset: 0; padding-bottom: 34vh;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3.2vh; z-index: 1; box-sizing: border-box;
+}
+.g-month {
+  width: clamp(48px, 12vw, 76px); height: clamp(48px, 12vw, 76px);
+  border-radius: 50%; background: rgba(0,0,0,0.55);
+  border: 2px solid rgba(255,255,255,0.85); color: #fff;
+  font-size: clamp(20px, 5vw, 32px); font-weight: 700; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+.g-outcome {
+  padding: clamp(10px, 2vh, 18px) clamp(18px, 4vw, 32px);
+  background: rgba(8,10,18,0.82);
+  border: 1px solid rgba(255,255,255,0.6);
+  border-radius: 12px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+  max-width: 86vw;
+}
+.g-outcome-title {
+  color: #f2e8c8; font-size: clamp(18px, 4.6vw, 26px); font-weight: 700;
+  text-align: center; letter-spacing: 1px;
+}
+
+.g-choices { display: flex; flex-direction: column; align-items: center; gap: clamp(10px, 2.4vh, 18px); width: 100%; }
+.g-choice {
+  width: min(72vw, 420px);
+  padding: clamp(10px, 1.8vh, 16px) clamp(14px, 3vw, 24px);
+  background: rgba(20,24,38,0.78); border: 1px solid rgba(255,255,255,0.5);
+  border-radius: 10px; color: #fff; font-size: clamp(14px, 3.6vw, 18px);
+  line-height: 1.4; cursor: pointer; box-shadow: 0 3px 12px rgba(0,0,0,0.35);
+  transition: background 0.15s ease, transform 0.08s ease;
+}
+.g-choice:hover { background: rgba(40,60,100,0.9); }
+.g-choice:active { transform: scale(0.97); }
+
+.g-textbox {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 32vh;
+  background: rgba(8,10,18,0.82); border-top: 1px solid rgba(255,255,255,0.25);
+  box-sizing: border-box; z-index: 2;
+}
+.g-text {
+  width: 100%; height: 100%; overflow-y: auto;
+  padding: clamp(12px, 2.2vh, 20px) clamp(14px, 3vw, 28px);
+  box-sizing: border-box; color: #e8ecf4;
+  font-size: clamp(14px, 3.8vw, 18px); line-height: 1.7;
+  white-space: pre-wrap; word-break: break-word;
+}
+.g-text::-webkit-scrollbar { width: 6px; }
+.g-text::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.25); border-radius: 3px; }
+
+/* 关系面板（右上） */
+.g-panel-toggle {
+  position: absolute; right: clamp(10px, 2.5vw, 16px); top: clamp(10px, 2.5vh, 16px);
+  z-index: 3; padding: 6px 12px; border-radius: 8px;
+  background: rgba(8,10,18,0.7); border: 1px solid rgba(255,255,255,0.4);
+  color: #fff; cursor: pointer; font-size: clamp(12px, 3vw, 14px);
+}
+.g-panel {
+  position: absolute; right: clamp(10px, 2.5vw, 16px); top: calc(clamp(10px, 2.5vh, 16px) + 38px);
+  z-index: 3; min-width: 160px; max-height: 40vh; overflow-y: auto;
+  background: rgba(8,10,18,0.82); border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 10px; padding: 10px 12px; color: #e8ecf4;
+  font-size: clamp(12px, 3vw, 14px);
+}
+.g-panel-head { font-weight: 600; margin-bottom: 6px; color: #f2e8c8; }
+.g-panel-empty { opacity: 0.6; }
+.g-panel-row {
+  display: flex; justify-content: space-between; gap: 16px; padding: 2px 0;
+}
+
+/* 因子面板（左上） */
+.g-factors-toggle {
+  position: absolute; left: clamp(10px, 2.5vw, 16px); top: clamp(10px, 2.5vh, 16px);
+  z-index: 3; padding: 6px 12px; border-radius: 8px;
+  background: rgba(8,10,18,0.7); border: 1px solid rgba(255,255,255,0.4);
+  color: #fff; cursor: pointer; font-size: clamp(12px, 3vw, 14px);
+}
+.g-factors {
+  position: absolute; left: clamp(10px, 2.5vw, 16px); top: calc(clamp(10px, 2.5vh, 16px) + 38px);
+  z-index: 3; min-width: 140px; max-height: 40vh; overflow-y: auto;
+  background: rgba(8,10,18,0.82); border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 10px; padding: 10px 12px; color: #e8ecf4;
+  font-size: clamp(12px, 3vw, 14px);
+}
+.g-factors-row { padding: 2px 0; color: #c8d8f0; }
