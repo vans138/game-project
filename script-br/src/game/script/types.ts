@@ -1,9 +1,11 @@
-// 剧本数据层类型（v7）
-// 相对 v6：
-//   1) NpcDef 增加 power（战力）
-//   2) InteractEvent 增加 onceGuaranteed / priority（必遇一次性高优先级事件）
-//   3) 新增 ClueDef / ClueStageDef（线索定义，支持多阶段调查）
-//   4) 新增 DamageTier 类型（伤害结果档位）
+// 剧本数据层类型（v8）
+// 相对 v7 变更：
+//   1) 事件双维度：tier（难度 common/rare/critical）+ valence（倾向权重表，可同时有利不利）
+//   2) 选项结果概率：Choice.outcomes（按权重抽一套 effects 执行），effects 保留为单套 100%
+//   3) 结果概率也受状态调制（把 outcomes 权重乘修饰器）
+//   4) 线索改名后无结构变化；湖面事件结束时给后天因子「唤龙」+ 战力提升，通过 effects 落地
+//   5) 新增后天因子（acquiredFactors）相关类型
+//   6) 新增龙迫（dragonCoerce）状态：目标本月行动失效 + 状态修饰
 
 export interface CustomCondition { type: 'custom'; kind: string; payload?: Record<string, unknown> }
 export interface CustomEffect { type: 'custom'; kind: string; payload?: Record<string, unknown> }
@@ -27,16 +29,36 @@ export type Effect =
   | { type: 'goalProgress'; target: string; value: number }
   | { type: 'log'; text: string }
   | { type: 'setTerminate'; groupId: string; value: 0 | 1 }
-  // v7 新增：留下一条线索（线索 id）
   | { type: 'gainClue'; clueId: string }
+  // v8 新增：战力提升、后天因子获得
+  | { type: 'powerDelta'; value: number }
+  | { type: 'acquireFactor'; factorId: string }
   | CustomEffect
 
 export interface Choice {
   id: string
   text: string
   require?: Condition
-  effects: Effect[]
+  /** 固定效果（若 outcomes 为空，则用这个，等价于一条 100% 结果） */
+  effects?: Effect[]
+  /** v8：概率结果表；按权重抽一套执行。若提供，则忽略 effects */
+  outcomes?: ChoiceOutcome[]
   next?: string | null
+}
+
+export interface ChoiceOutcome {
+  weight: number
+  effects: Effect[]
+  /** 可选：这条结果触发后额外写的一行日志（用于区分结果） */
+  note?: string
+}
+
+// ---------- 事件双维度 ----------
+export type EventTier = 'common' | 'rare' | 'critical'
+export interface Valence {
+  favorable?: number    // 有利权重
+  unfavorable?: number  // 不利权重
+  neutral?: number      // 中立权重
 }
 
 export type EventKind = 'fixed' | 'random' | 'samebox' | 'study' | 'clue' | 'investigate'
@@ -51,6 +73,10 @@ export interface EventDef {
   sameboxPlace?: string
   fromClue?: string
   weight?: number
+  /** v8：难度 */
+  tier: EventTier
+  /** v8：倾向权重 */
+  valence: Valence
   choices: Choice[]
   data?: Record<string, unknown>
 }
@@ -92,7 +118,6 @@ export interface IdentityDef {
   name: string
   desc: string
   identityFactorPool: IdentityFactorId[]
-  /** v7：基础战力（玩家的初始战力基数，来自身份） */
   basePower: number
 }
 
@@ -105,7 +130,6 @@ export interface NpcDef {
   persistAcrossRuns: boolean
   place: string
   relation: string
-  /** v7：NPC 战力（写死，后续可调） */
   power: number
 }
 
@@ -158,7 +182,6 @@ export interface InteractNode {
   text: string
   choices?: InteractChoice[]
   chance?: { p: number; ifHit: InteractNode; ifMiss: InteractNode }
-  // v7：节点结束时留下的线索（多个对应多种分支）
   gainClue?: string
 }
 
@@ -168,36 +191,39 @@ export interface InteractEvent {
   weight: number
   requires?: InteractRequires
   root: InteractNode
-  /**
-   * v7：必遇一次性事件。
-   * - onceGuaranteed=true：只要条件满足，第一次进入随机抽取必定命中；
-   * - 触发一次后本局不再出现；
-   * - 若同一月有多个必遇事件，按 priority 降序，先抽到高优先级。
-   */
   onceGuaranteed?: boolean
   priority?: number
+  /** v8：难度 */
+  tier: EventTier
+  /** v8：倾向权重 */
+  valence: Valence
 }
 
 // ---------- 线索 ----------
 export interface ClueStageDef {
-  /** 阶段标题（如：第一印象） */
   title: string
-  /** 本阶段揭示文本 */
   text: string
 }
 
 export interface ClueDef {
   id: string
-  /** 线索标题（如：失控？） */
   title: string
-  /** 来源事件 id（用于展示"线索来源"，不参与逻辑） */
   fromEventId?: string
-  /** 多阶段线索；数组长度=可调查次数 */
   stages: ClueStageDef[]
 }
 
 // ---------- 伤害 ----------
 export type DamageTier = 'none' | 'light' | 'heavy' | 'death'
+
+// ---------- 后天因子 ----------
+// 后天因子 = 不是开局定的身份因子，而是通过各种事件获得的"能力/状态"
+export interface AcquiredFactorDef {
+  id: string
+  name: string
+  desc: string
+  /** 若为 true，则玩家拥有后，在危急事件里自动多一个选项（由引擎处理） */
+  grantsCriticalOption?: string  // 例如 '唤龙'
+}
 
 export interface Script {
   id: string
@@ -213,5 +239,7 @@ export interface Script {
   factorGroups: FactorGroup[]
   interactEvents: InteractEvent[]
   clues: ClueDef[]
+  /** v8：后天因子池 */
+  acquiredFactors: AcquiredFactorDef[]
   affinityCap: number
 }

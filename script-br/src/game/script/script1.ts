@@ -1,10 +1,10 @@
-// 第一份剧本（v7）：青川中学 · Y1 上学期 + 寒假
-// 相对 v6.2 的变更：
-//   1) NPC 增加 power（战力）
-//   2) IdentityDef 增加 basePower（玩家初始战力）
-//   3) 新增湖面事件 it_lake_dragon（必遇一次性、高优先级、封龙/古龙文案分叉）
-//   4) 新增线索定义 clues（「失控？」多阶段）
-//   5) 新增失控事件 it_out_of_control（占位，由 RunEngine 强制指定）
+// 第一份剧本（v8）：青川中学 · Y1 上学期 + 寒假
+// 相对 v7 变更：
+//   1) 事件加 tier + valence 双维度
+//   2) 线索「失控？」改名「龙？」
+//   3) 湖面事件：无论选什么，结束都给线索「龙？」+ 战力 +10 + 后天因子「唤龙」
+//   4) 新增后天因子定义：唤龙
+//   5) 触发湖面事件后，战力 +10 用 outcomes 保证 100%
 
 import type {
   Script,
@@ -15,6 +15,7 @@ import type {
   EventDef,
   InteractEvent,
   ClueDef,
+  AcquiredFactorDef,
 } from './types'
 
 const identities: IdentityDef[] = [
@@ -30,6 +31,15 @@ const identities: IdentityDef[] = [
 const factorPool: FactorDef[] = []
 const factorGroups: FactorGroup[] = []
 
+const acquiredFactors: AcquiredFactorDef[] = [
+  {
+    id: 'acq_call_dragon',
+    name: '唤龙',
+    desc: '你身体里多了一道不属于你的呼唤。危急之时，你可以试着去应答它。',
+    grantsCriticalOption: '唤龙',
+  },
+]
+
 function buildTimeline(): MonthDef[] {
   return [
     { index: 1, year: 1, month: 9,  type: 'school',  stepCount: 2, fixedEvent: 'e_term_open'  },
@@ -44,6 +54,7 @@ function buildTimeline(): MonthDef[] {
 const events: EventDef[] = [
   {
     id: 'e_term_open', kind: 'fixed', season: 'school', title: '开学典礼',
+    tier: 'common', valence: { neutral: 1 },
     narrative:
       '九月的操场，升旗、训话、人群。你站在队伍里，忽然有一瞬间说不清自己是谁。\n' +
       '阳光很亮，你听见体内（或背后）有什么东西轻轻动了一下。',
@@ -71,6 +82,7 @@ const events: EventDef[] = [
 
   {
     id: 'e_oct_walk', kind: 'fixed', season: 'school', title: '十月 · 晚自习后的操场',
+    tier: 'common', valence: { favorable: 0.7, unfavorable: 0.3 },
     narrative:
       '十月的一个晚上，操场边的灯只亮了一半。\n' +
       '你和邱同学一起走回宿舍，TA 忽然压低声音：“你有没有觉得，我们班那个转来的，有点怪。”',
@@ -95,6 +107,7 @@ const events: EventDef[] = [
 
   {
     id: 'e_mid_exam', kind: 'fixed', season: 'school', title: '期中考试',
+    tier: 'common', valence: { favorable: 1 },
     narrative:
       '考场安静得能听见翻卷声。\n' +
       '做到一半时，你忽然觉得，卷子上的字在轻轻抖动。',
@@ -121,6 +134,7 @@ const events: EventDef[] = [
 
   {
     id: 'e_dec_snow', kind: 'fixed', season: 'school', title: '十二月 · 初雪',
+    tier: 'rare', valence: { favorable: 0.5, unfavorable: 0.5 },
     narrative:
       '十二月的第一场雪落下来。晚自习后，教学楼的走廊空得能听见回声。\n' +
       '你看见落雪停在半空中，像是有人按了暂停。',
@@ -142,6 +156,7 @@ const events: EventDef[] = [
 
   {
     id: 'e_final_exam', kind: 'fixed', season: 'school', title: '期末考试',
+    tier: 'common', valence: { favorable: 0.8, unfavorable: 0.2 },
     narrative:
       '一年最重的那场考试。窗外的树在风里响。\n' +
       '答到最后一题时，你忽然清晰地想起来了：去年这个时候，你也坐在这张桌子前。',
@@ -167,13 +182,13 @@ const events: EventDef[] = [
 
 const clues: ClueDef[] = [
   {
-    id: 'clue_out_of_control',
-    title: '失控？',
+    id: 'clue_dragon',
+    title: '龙？',
     fromEventId: 'it_lake_dragon',
     stages: [
       {
         title: '第一印象',
-        text: '湖面下的那条龙冲向你的前一秒，你什么都不记得了。\n你只记得醒来时，掌心有一道还没愈合的痕。',
+        text: '湖面下的那条东西冲向你的前一秒，你什么都不记得了。\n你只记得醒来时，掌心有一道还没愈合的痕。',
       },
       {
         title: '推敲',
@@ -187,13 +202,23 @@ const clues: ClueDef[] = [
   },
 ]
 
+// 通用"必遇湖面事件触发后"的结算——用 outcomes 保证 100%
+const lakeDragonRewards = [
+  { type: 'gainClue' as const, clueId: 'clue_dragon' },
+  { type: 'powerDelta' as const, value: 10 },
+  { type: 'acquireFactor' as const, factorId: 'acq_call_dragon' },
+  { type: 'log' as const, text: '掌心那道痕还没愈合，你就知道：有什么东西在你体内醒了。' },
+]
+
 const interactEvents: InteractEvent[] = [
   {
     // 湖面事件：必遇、一次性、高优先级。
-    // 封龙 / 古龙都触发，但看到的龙不同（封龙：龙身有锁链；古龙：无锁链）。
-    // 结束留线索「失控？」。
+    // 无论选哪个分支，都结算：得线索「龙？」+ 战力 +10 + 后天因子「唤龙」。
+    // 具体结算放在"事件结束点"——这里我们挂到每个分支的最后一步，
+    // 通过叶子节点 gainClue 或通过 RunEngine 在 finishInteract 时统一补结算。
     id: 'it_lake_dragon', kind: 'maybeLong', weight: 10,
     onceGuaranteed: true, priority: 100,
+    tier: 'rare', valence: { favorable: 0.6, unfavorable: 0.4 },
     root: {
       text:
         '某个放学后的傍晚，你没有直接回家。\n' +
@@ -203,19 +228,15 @@ const interactEvents: InteractEvent[] = [
         {
           text: '开口问它：你是什么？',
           next: {
-            // 用 {byMutual, byOneSide} 复用：这里借它做"古龙/封龙"的视觉分叉，
-            // 判定函数在 RunEngine 里被特判（见 handleInteractChoice 的 lakeDragon 分支）
             byMutual: {
               text:
                 '古龙没有回答。它只是静静看着你，鳞片是淬过火的暗金色，没有锁链——从头到尾，一截都没有。\n' +
                 '然后它突然朝你冲了上来。',
-              gainClue: 'clue_out_of_control',
             },
             byOneSide: {
               text:
                 '古龙没有回答。它缓缓游动，你才看清：它的龙身上缠满了一道又一道锈色的锁链。\n' +
                 '它在锁链里挣扎了一下，然后突然朝你冲了上来。',
-              gainClue: 'clue_out_of_control',
             },
           },
         },
@@ -242,6 +263,7 @@ const interactEvents: InteractEvent[] = [
 
   {
     id: 'it_bench', kind: 'short', weight: 3,
+    tier: 'common', valence: { favorable: 0.5, unfavorable: 0.5 },
     root: {
       text: '放学后，操场边的长椅空着。你正想坐，发现另一头也来了个人。',
       choices: [
@@ -254,6 +276,7 @@ const interactEvents: InteractEvent[] = [
   {
     id: 'it_latenight', kind: 'maybeLong', weight: 4,
     requires: { hasCrush: true },
+    tier: 'rare', valence: { favorable: 0.5, unfavorable: 0.5 },
     root: {
       text: '某天你学得入了迷，很晚才走。教室里只剩你一个人，走廊的灯也已经关了大半。\n窗外黑着，只有对面楼还隐约亮着一格。',
       choices: [
@@ -271,6 +294,7 @@ const interactEvents: InteractEvent[] = [
 
   {
     id: 'it_rooftop', kind: 'short', weight: 2,
+    tier: 'common', valence: { favorable: 0.5, unfavorable: 0.5 },
     root: {
       text: '你上了天台，发现有个人靠在栏杆边。TA 没拿烟，只是看着校门的方向。',
       choices: [
@@ -282,6 +306,7 @@ const interactEvents: InteractEvent[] = [
 
   {
     id: 'it_oldfloor', kind: 'maybeLong', weight: 2,
+    tier: 'rare', valence: { favorable: 0.3, unfavorable: 0.7 },
     root: {
       text: '旧教学楼里，那扇门又出现了。\n这一次，它是真的、实在地立在你面前，门缝下透着一点光。',
       choices: [
@@ -305,8 +330,9 @@ const interactEvents: InteractEvent[] = [
   },
 
   {
-    // 失控事件：本批不参与常规抽取（weight=0），由 RunEngine 在检测到敌意时强制指定。
+    // 失控事件：由 RunEngine 在检测敌意时强制指定。
     id: 'it_out_of_control', kind: 'short', weight: 0,
+    tier: 'critical', valence: { unfavorable: 1 },
     root: {
       text: '这个月的某种东西，终于压不住了。\n等你回过神来，已经站在那个人面前。',
       choices: [
@@ -343,6 +369,7 @@ export const SCRIPT_1: Script = {
   events,
   interactEvents,
   clues,
+  acquiredFactors,
   outcomes: [
     { id: 'o_default', title: '【暂时】学期未完', narrative: '这一段结束了。', minGoalRatio: 0 },
   ],

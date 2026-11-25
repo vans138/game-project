@@ -1,16 +1,8 @@
-// 线索运行态工具（v7）
-//
-// 一条线索从"获得"开始，可被调查 `stages.length` 次，逐层揭示。
-// 到全部揭示 → done=true。
-//
-// 运行态存在 RunEngine.player.clueRuntime 里：
-//   Record<clueId, { stage: number }>
-//   stage 表示"已调查到第几层"（0=未调查，1=揭示了第一层……）
+// 线索运行态工具（v8 不变，仅注释同步）
 
 import type { ClueDef } from '../script/types'
 
 export interface ClueRuntimeEntry {
-  /** 已调查层数（0 表示刚获得、还没调查过） */
   stage: number
 }
 
@@ -25,7 +17,6 @@ export function isClueDone(def: ClueDef, entry: ClueRuntimeEntry | undefined): b
   return entry.stage >= def.stages.length
 }
 
-/** 调查一次；返回新揭示的文本（若已揭完返回 null） */
 export function investigateClue(
   def: ClueDef,
   rt: ClueRuntime,
@@ -41,7 +32,6 @@ export function investigateClue(
   }
 }
 
-/** 可调查的线索（未揭完） */
 export function listInvestigable(defs: ClueDef[], rt: ClueRuntime): ClueDef[] {
   return defs.filter((d) => rt[d.id] && rt[d.id].stage < d.stages.length)
 }
