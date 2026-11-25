@@ -3,174 +3,171 @@
 ## 基本信息
 - 项目：剧本吃鸡（多人共享剧本 · 轮回养成 · 纯文本）
 - 阶段：阶段3 编码实现（进行中）
-- 当前批次：**第 2.1 批「crush 系统 + "她"的完整分叉树 + 两处地基修复」已完成，能跑通**
-- 更新日期：2026-11-26（本版）
+- 当前批次：**第 2.1 批「古龙线骨架」已完成、能跑通、typecheck 通过**
+- 更新日期：2026-11-26
 
 ---
 
-## 一、真实可运行目录（极其重要，必读）
+## 一、下次开工第一件事（最重要，必读）
 
-**真正在跑的入口**：
-```
-C:\Users\34903\game_project\script-br\
-```
+### 用户已定的方向：**先做 A = 在现有 6 个月里加"能触发龙迫的好感路径"，先不做时间线扩展。**
 
-**启动命令**（本机 npm 不在 PATH，必须用完整路径）：
-```powershell
-cd "C:\Users\34903\game_project\script-br"
-& "C:\Program Files\nodejs\npm.cmd" run dev
-```
-- Vite dev 端口：**5173**
-- 浏览器：`http://localhost:5173`
+下次对话**直接进入这一项，不要再问"要不要做 A"**，用户已经说了 A。
 
-**类型检查 / 构建**（v7 起有了门禁）：
-```powershell
-& "C:\Program Files\nodejs\npm.cmd" run typecheck   # tsc --noEmit
-& "C:\Program Files\nodejs\npm.cmd" run build       # tsc --noEmit && vite build
-```
+### A 任务的验收目标（做完用户要能亲眼看到）
+1. 有选项能把某个 NPC 的好感压到 **≤ -50**。
+2. 一旦某 NPC 好感 ≤ -50，**下个月主选项里出现「龙迫（N 个目标）」**。
+3. 点「龙迫」→ 选目标 → 本月：
+   - 反馈里显示"TA 本月的行动被压下去了"；
+   - 小事件被替换成"被人盯着/无时无刻的注视"；
+   - 该 NPC 不能再被龙迫（每目标一次），全局限 2 次。
+4. 若好感 ≤ -50 且玩家走到"失控"判定 → 走 `it_out_of_control` + 伤害概率（无伤/轻伤/重伤/死亡）。
+5. 全程 typecheck 通过。
 
-**项目根不是 `C:\Users\34903\script-br`（那个不存在），而是 `C:\Users\34903\game_project`。**
+### 已知的坑（别踩）
+- 现在剧本**没有任何选项能把好感压到 -50**，所以龙迫/失控在实机里看不到，必须在 `script1.ts` 里加负好感内容。
+- 加负好感选项时，注意 `enforceAffinityCap()` **只管正向**：负向不会被裁剪，能到 -50 甚至更低。
+- 好感总计面板 `affinityTotal` 只累加正向（`Math.max(0, v)`），负好感玩家在面板上看到的是"某 NPC 是负数"，这没问题。
 
 ---
 
-## 二、目录结构与两套代码的关系（关键，别搞混）
-
-`C:\Users\34903\game_project\` 下并存几个"看起来像项目"的东西：
-
-| 路径 | 状态 | 说明 |
-|---|---|---|
-| **`script-br\`** | ✅ **唯一真在跑的主线** | 入口 `main.tsx` / `App.tsx` / `index.html` 齐全，依赖已装 |
-| `code\script-br\` | ⚠️ 旧版备份 | 早期写在这里，缺 `main.tsx` 入口，单独跑不起来；内容 ≈ `script-br\` 的 v6 |
-| `code\src\` | ⚠️ 早期试验版 | v1 试验数据模型，**没有因子/互斥组**，跟正式版结构不同，当"图纸"看 |
-| `code\client\` | ⚠️ 早期试验版 | 同 `code\src\`，更小的一套 |
-| 顶层 `package.json` / `vite.config.ts` / `index.html` / `tsconfig.json` | ⚠️ 空壳 | **没有 `src\` 目录**，`npm run dev` 白屏；别从这里启动 |
-
-**用户已明确要求**：`code\client\` 与 `code\src\` **保留不删**，只标注 deprecated。早期试验版**永远不要修改、不要 import 到主线**。
-
-**新代码只写 `script-br\src\`，绝不要再写 `code\script-br\src\`**（那是上一轮的错误，已迁移完毕）。
-
----
-
-## 三、当前主线代码结构（`script-br\src\`）
+## 二、可运行目录（唯一）
 
 ```
-script-br/
-  index.html
-  package.json           # dev / typecheck / build
-  tsconfig.json          # 已开 allowImportingTsExtensions
-  vite.config.ts
-  src/
-    main.tsx
-    App.tsx              # 只用 createLocalSource + GameScreen
-    game/
-      GameView.ts        # UI 只读快照 + GameSource 接口（v6，新增 crushName）
-      LocalSource.ts     # 单机数据源（v6）：选身份 → 选"在意的人" → RunEngine → GameView
-      GameScreen.tsx     # 局内 UI（v6，关系面板显示"在意 · XX"）
-      styles.css         # 响应式样式（v6）
-      engine/
-        RunEngine.ts     # 月流程 8 阶段状态机 + 身份 + crush + 随机互动树（v7）
-        evaluator.ts     # 条件求值 + 效果结算（v6，支持 identityFactorIs）
-        rng.ts           # 种子随机（mulberry32）
-      script/
-        types.ts         # 剧本类型 v7（InteractRequires.crushAffinityAtLeast / InteractChoice.effects / InteractEvent.mutual）
-        script1.ts       # 剧本 v7（Y1-9 ~ Y2-2，5 固定事件 + 4 随机互动，含"她"的完整分叉树）
+C:\Users\34903\game_project\script-br
+```
+启动（CMD / PowerShell 都可，但 npm 不在 PATH，必须用完整路径）：
+```
+cd /d "C:\Users\34903\game_project\script-br"
+"C:\Program Files\nodejs\npm.cmd" run dev
+```
+- 端口 5173。浏览器 `http://localhost:5173`
+- 类型检查：`"C:\Program Files\nodejs\npm.cmd" run typecheck`（= tsc --noEmit）
+- 构建：`"C:\Program Files\nodejs\npm.cmd" run build`
+
+**最近一次验证（2026-11-26）**：typecheck 通过，dev 能起，湖面事件/线索/战力/唤龙都能看到。
+
+---
+
+## 三、当前代码结构（`script-br/src/game/`，这是活的）
+
+```
+game/
+  GameView.ts          # UI 快照结构 + GameSource 接口（含 clues / playerPower / acquiredFactors）
+  LocalSource.ts       # 单机数据源：选身份 → RunEngine → GameView
+  GameScreen.tsx       # 局内 UI（背景+月徽标+选项+下方文本框+右上状态面板，面板含战力/好感/线索）
+  styles.css
+
+  engine/
+    RunEngine.ts       # 【入口】class RunEngine extends RunEngineBase
+                       #   只放 snapshot/buildPhaseView/identityHint/choose/emitAndSnap/subscribe
+    RunEngineBase.ts   # 【数据层】state/月份流程/主选项/调查/龙迫/小事件/失控/随机互动抽取/湖面结算
+    balance.ts         # 所有概率与数值常量（事件三档基准、结果两侧基准、龙迫加成、小事件、伤害）
+    modifiers.ts       # 概率调制内核：baseTierWeights/applyTierModifier/normalizeTier/pickTier
+                       #               baseSideWeights/applySideModifier/normalizeSide/pickSide
+    evaluator.ts       # evalCondition + applyEffects（含 powerDelta / acquireFactor / gainClue）
+    damage.ts          # calcDamage + damageNarrative（无伤/轻伤/重伤/死亡）
+    clues.ts           # acquireClue / investigateClue / listInvestigable / ClueRuntime
+    rng.ts             # 种子随机 mulberry32
+
+  script/
+    types.ts           # 剧本类型 v8（tier/valence 双维度、outcomes 概率结果、ClueDef、后天因子等）
+    script1.ts         # 第一份剧本（Y1-9 ~ Y2-2，6 个月）
 ```
 
----
-
-## 四、第 2.1 批已完成的能力（跑起来可验证）
-
-### 1. crush（在意的人）系统
-- ✅ 开局**两步选择**：先选玄幻身份（龙烬余孤）→ 再选"在意的人"（8 个常驻 NPC 任选，含关系标签）
-- ✅ 选定后写入 `player.crushId`，关系面板显示"在意 · XX"
-- ✅ **`byMutual` 不再是抛硬币**：剧本用 `mutual: { from: 'crush', threshold: 30 }` 声明判定来源，达到阈值才走"双方主动"分支（实测 29 → false，30 → true）
-- ✅ 没有 `mutual` 规则的事件（如旧楼那扇门）才退回 0.6 随机
-
-### 2. "她"的完整分叉树（`it_latenight`）
-用户口述的结构已完整实现：
-```
-晚自习 → 去看看 → 她在？ ┬ 在 → 主动找 TA（双方主动/单方） / 看一眼就走 / 敲门（好感≥40）
-                         └ 不在 → 站一会儿/直接走 → 校门口 → 遇到？ ┬ 遇到 → 主动找 TA（双方主动/单方）/ 看一眼离开
-                                                                  └ 没遇到 → 一个人回宿舍
-```
-- ✅ 文本用 `{crush}` 占位，运行时替换成玩家选定的人名（300 局随机实测 0 次残留占位符）
-- ✅ 选项效果用 `target: '$crush'`，同一棵树套在任何 NPC 上都成立
-- ✅ 支持 `chance` 概率节点（"她在不在" 0.55、"校门口遇不遇到" 0.45）——这个 schema 之前一直没实现
-- ✅ 随机互动**选项终于能生效**：`InteractChoice.effects` 可加好感 / flag / 目标进度 / 日志
-- ✅ 进池门槛：`requires.crushAffinityAtLeast`；没选 crush 时 `it_latenight` 永不出现（实测 0 次）
-
-### 3. 两处地基修复（顺手做掉，避免新内容被污染）
-- ✅ **好感总封顶改为"只限新增"**：旧实现按比例回缩已有好感，实测"每月都拉邱同学"会出现 total 100→96、邱 33→32→29；现在只把剩余额度给新增，历史值不动（实测全程拉同一个人：0 次下降、峰值 100）
-- ✅ **同月随机互动 ①/② 去重**：旧实现 300 局里 266 局（89%）同月抽到同一个事件；现在 200 局 0 次
-- ✅ `__advance__` 兜底：任意阶段选项被条件过滤空时，"推进"按钮会真正推进阶段，不再软锁
-- ✅ 小事件"负向权重 > 正向"真正生效：学习时若在意的人好感 < 10，`p` 额外 -0.4（旧代码该分支引用了永远为 undefined 的 `bondTargetId`，是死代码）
-
-### 4. 工程门禁
-- ✅ `tsconfig.json` 补 `allowImportingTsExtensions`（`main.tsx` 引 `./App.tsx` 以前直接 TS5097）
-- ✅ `package.json` 增加 `typecheck` / `build` 脚本
-- ✅ 本批验证：`tsc --noEmit` 通过；`vite build` 通过；800+ 局引擎模拟（含 500 局随机 fuzz）0 异常
+**外部依赖不变**：`LocalSource.ts` 只 `import { RunEngine, type Snapshot } from './engine/RunEngine'`。拆文件时不要改这个入口。
 
 ---
 
-## 五、已知简化与未做的（下一批的活）
+## 四、本轮（第 2.1 批）已经做成的能力
 
-### 1. 同框（samebox）还是空的
-`EventDef.kind` 有 `samebox`，引擎未接；`MonthDef` 里也没有同框配置。用户说过"要做，但先专注个人"，**这是第 3 批**。
+### 1. 事件双维度（已落地）
+- `EventDef` / `InteractEvent` 都有 `tier`（common/rare/critical）和 `valence`（favorable/unfavorable/neutral 权重表）。
+- **注意：valence 目前只在龙迫调制里被用到；平时抽取"先按 tier 两段抽、档内按 weight 抽"**。valence 的"平时是否影响抽取"用户还没最终定，**下次做 A 时不要动这块**，除非用户明确要。
 
-### 2. 世界因子（家族/旧楼/学业）未激活
-`factorPool: []`、`factorGroups: []`，`EvalContext.activeFactors` 恒为空集。按用户指示本批不做。
+### 2. 统一概率模型（已落地）
+- 事件：先按 tier 三档归一化抽档，再档内抽事件。
+- 结果：`Choice.outcomes` 分 favorable/unfavorable 两段抽。
+- 数值全在 `balance.ts`：
+  - 事件基准：common 70 / rare 25 / critical 5
+  - 结果基准：favorable 75 / unfavorable 25
+  - 龙迫加成：tier 危急+10 稀有+5；side 不利+15
+  - **无上限兜底**（用户明确要求）
+- `modifierSource()` 目前恒返回 `dragonCoercedThisMonth: false`（因为龙迫目标是 NPC，不是玩家自己），所以对"玩家自己抽事件"的调制暂时不生效。**这是预期**：等以后有多方龙迫玩家时才接。
 
-### 3. 只有 6 个月，没有三年
-时间线是 Y1-9 ~ Y2-2（[script1.ts](script-br/src/game/script/script1.ts)），到寒假就 `finish()`。
-结局固定 `outcomes[0]`（"【暂时】学期未完"），`minGoalRatio` / 私人目标完成度 / 关系结局都没接。
+### 3. 湖面事件（已落地）
+- `it_lake_dragon`：必遇（onceGuaranteed）+ 一次性 + priority 100。
+- 封龙看到"锈色锁链"，古龙看到"暗金鳞片无锁链"（用 byMutual 复用做身份分叉）。
+- **无论选哪个分支**，走完都统一结算（`settleLakeDragon`）：
+  - 线索《龙？》+1
+  - 战力 +10
+  - 后天因子「唤龙」
+- 月志里会出现：`🔍 你获得了一条线索：《龙？》` 和 `🧬 你获得了后天因子「唤龙」`。
 
-### 4. 8 个 NPC 只有 4 个有戏
-林老师 / 邱同学 / 月亮学姐 / 何老师 在固定事件里有互动；姚主任 / 沈星河 / 江晴 / 顾伯 目前只能靠主选项"拉近关系"碰。
-主选项一次列出 9 个按钮（学习 + 8 个 NPC），手机端要滚。
+### 4. 线索系统（雏形已落地）
+- `ClueDef` 多阶段；《龙？》有 3 阶段。
+- 主选项里有「调查线索（N 条可查）」，每查一次推进一阶段。
+- 状态面板显示线索 `stage/total`。
 
-### 5. `it_bench` / `it_rooftop` / `it_oldfloor` 仍然没有状态后果
-它们没有配 `effects`（本批只给"她"的树配了）。三个事件里 `it_bench` 权重 3，独占约 43% 抽取。
+### 5. 龙迫机制（已实现，但实机触发不到）
+- 代码已就绪：主选项检测好感 ≤ -50 → 出现「龙迫」；每目标一次 / 全局最多 2 次。
+- 效果：小事件换成"被人盯着"，标记 `coerceState`。
+- **问题：剧本里还没有能把好感压到 -50 的选项，所以看不到。这就是 A 任务要补的。**
 
-### 6. 其它 schema 空壳
-`MonthDef.stepCount` / `silentStudy`、`Role` / `identityTags` / `hasIdentity`、`evaluator` 的 `setTerminate` / custom 条件、`OutcomeDef.minGoalRatio`、`GameView` 的 `year` / `monthOfYear` / `phase` / `outcomeNarrative` —— 都还没用上。
+### 6. 失控 + 伤害（已实现，实机触发不到）
+- `checkOutOfControl()`：好感 ≤ -50 的任意对象 → 强制占两次机会 → `it_out_of_control`。
+- 伤害：`calcDamage` 按战力差 + 恨意算四档概率（无伤/轻伤/重伤/死亡）。
+- **同样因为好感压不下去，实机看不到。**
 
-### 7. 对局不可复现、不能重开
-seed 来自 `Date.now()`（[RunEngine.ts](script-br/src/game/engine/RunEngine.ts) 构造函数），`rng.randomSeed()` 没用到；结局后没有"重新开始"，要刷新页面。
-
-### 8. 关系状态还很薄
-`RelationRuntime`（stranger/acquaintance/close/crush）没做，`sameClass` 也没数据；"她与别人走得很近"这类关系变动事件还没有，所以小事件的 -0.4 目前用"好感 < 10"代理。
-
----
-
-## 六、下一批开工建议（给下一个 AI）
-
-**优先级**（按用户意图）：
-1. **同框（samebox）引擎**：按月/地点配置同框事件，同框即触发，别人可介入抢约（第 3 批）；
-2. **私人目标 + 双层目标**：目标进度现在只在固定事件里 +1/+2，UI 完全不显示；补目标面板与完成度；
-3. **结局判定**：三年时间线 + `outcomes` 表驱动 + 关系结局；
-4. 给 `it_bench` / `it_rooftop` / `it_oldfloor` 补效果与内容；
-5. 再往后：局外轮回存档（唯一身份 + 好感封顶分配 + 解锁带出）、联网。
-
-**验证方式**：每批做完，用户会 `cd script-br` → `npm run dev` 实际跑。
-
-**用户偏好记录**：
-- 不喜欢"因子状态机（unaware/suspected/confirmed）"被明面做出来 → **不要做显式状态机**，靠事件选项 + 文本差异暗示；
-- "线"这个说法已被用户否决，**统一说"因子"**；
-- 内容优先，机制验证优先，不做商业化卖点；
-- 每次最多问 3 个问题。
-
-**环境坑（老生常谈）**：
-- npm 不在 PATH，必须用 `& "C:\Program Files\nodejs\npm.cmd"`
-- 不要往 `code\script-br\src\` 或 `code\src\` 写代码
-- 保存代码必须写绝对真实路径 `script-br/src/game/...`（相对项目根 `game_project`）
-- 仓库把 `node_modules` 也提交了（4897 个文件），`git status` 会很慢；`.gitignore` 目前没忽略它
+### 7. 唤龙（已实现）
+- 玩家有 `acq_call_dragon` 后天因子，且当前是 `tier === 'critical'` 的固定事件时，固定事件选项里会多一条 `【唤龙】去应答那个呼唤`。
+- **注意：现在剧本没有 critical 固定事件，所以这个选项暂时看不到。** 做 A 时可以顺手加一个 critical 事件来验证。
 
 ---
 
-## 七、运行状态确认
+## 五、落盘工具（chat_with_state.py）现状
 
-**最近一次（v7）**：`tsc --noEmit` 通过、`vite build` 通过、引擎模拟 800+ 局无异常。
-浏览器侧待用户确认：
-- 开局先选身份，再选"在意的人"（8 个 NPC）；
-- 局内关系面板显示"好感 x/100 · 在意 · XX"；
-- 随机互动里会出现"晚自习 → 去看看"的完整树。
+- 已改成 **fail-safe 落盘**：`extract_saves()` 会用 `looks_truncated()` 检查可疑截断（末行坏结尾 / 括号不配平 / 反引号奇数），**疑似截断就拒写，转存 `.pending/`**。
+- 因此：**永远不会再出现"好文件被半截覆盖成坏的"**。
+- `.pending/` 已自动加进 `.gitignore`，且不喂给模型。
+- **单文件长度红线：≤200 行**。超过就拆文件，别再整份硬发。
+- 如果某轮有文件被拒写，终端会打印 `❌ 拒绝写入 …`，去 `.pending/` 找到那份内容即可。
+
+---
+
+## 六、已知简化 / 未做（下次避雷）
+
+1. **时间线只有 6 个月**（Y1-9 ~ Y2-2）。第 6 个月（2 月寒假）走完就 `finish()`，结局固定 `outcomes[0]`「【暂时】学期未完」。用户已确认这是 MVP 边界，**不是 bug**。
+2. **结局页文案**：目前只显示标题，没强调"这是学期未完"。用户曾问过要不要改，**还没做**。可顺手加一句"第一学期 · 完，后续在做"。
+3. **龙迫看不到**（好感压不到 -50）—— A 任务的核心。
+4. **唤龙选项看不到**（没有 critical 固定事件）。
+5. **湖面事件还是渐变占位背景**，没接真的龙的图。
+6. `it_bench` / `it_rooftop` / `it_oldfloor` 没有 `effects`，也没有后果（仍是最早的占位树）。
+7. `it_latenight` 依赖 `hasCrush`，但现在还没 crush 系统 → 它永远不出现在随机池。**crush 系统是更后面的事，用户之前说先做古龙线，别现在碰。**
+8. `NpcDef.power` 已经写死有值；玩家 `power` 从 `identity.basePower` 起始，湖面 +10。暂无其它成长途径。
+9. 单机对局不可复现（seed 来自 Date.now()），也没有"重新开始"，要刷新页面。
+10. 世界因子（家族/旧楼/学业）未激活（`factorPool: []`、`factorGroups: []`）。
+
+---
+
+## 七、环境坑（老生常谈）
+
+- npm 不在 PATH：必须 `& "C:\Program Files\nodejs\npm.cmd" run xxx`。
+- 不要往 `code\script-br\src\` 或 `code\src\` 写代码（那是 deprecated 旧备份，用户要求保留不删、不改）。
+- **新代码只写 `script-br\src\`**。
+- `node_modules` 被提交进仓库了，`git status` 慢是正常的，不是卡住。
+- 保存代码必须写相对项目根 `game_project` 的真实路径，如 `script-br/src/game/engine/RunEngine.ts`。
+
+---
+
+## 八、给下次 AI 的推荐工作顺序
+
+1. **第一步就干 A**：在 `script1.ts` 里给固定事件加"把某 NPC 好感压到 -50"的选项（建议放在 `e_oct_walk` 的某个分支"翻脸/撕破脸/故意疏远"之类）。
+2. 加完后自己跑一次 6 个月，确认：
+   - 好感能到 -50；
+   - 下个月主选项出现「龙迫」；
+   - 龙迫后小事件变成"被盯着"；
+   - 失控能触发（如果当回合好感已经 -50 且走到判定点）。
+3. 如果用户想看唤龙：顺手加一个 `tier: 'critical'` 的固定事件（比如旧楼深夜 / 考试后失控），验证"唤龙"额外选项。
+4. 顺手把结束文案改成「【第一学期 · 完】后续内容在做」，避免用户以为游戏坏了。
+5. 以上都不涉及拆文件、不涉及概率调参。**不要主动扩展到三年**，用户没要。
