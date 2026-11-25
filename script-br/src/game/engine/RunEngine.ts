@@ -1,4 +1,10 @@
-// 局内引擎 v6：8 阶段月流程 + 身份因子 + 关系 + 随机互动树（完整）
+// 局内引擎 v6.2：修 logs 覆盖 bug + 修正 it_latenight 的 hasCrush 条件副作用
+//
+// v6.2 变更：
+//   1) 所有阶段产生的日志都追加到 state.monthLog，不再依赖会被覆盖的 flashNarrative
+//   2) buildPhaseView 在每段开头渲染 monthLog（累积显示），因此选项效果一律可见
+//   3) pickInteract 对 hasCrush:true 的事件做真过滤（crushId 未定义 → 排除）
+//      本批它会被过滤掉，属于预期；crush 接入后自动生效
 
 import type {
   Script,
@@ -61,9 +67,11 @@ interface RunState {
   mainChoice?: 'study' | 'bond' | 'rest'
   bondTargetId?: string
   feedback?: { self: string; peers: string; special?: string }
-  flashNarrative?: string
   phaseHint: string
+  /** 累积日志：所有阶段产生的叙述都追加到这里，不再被覆盖 */
   monthLog: string[]
+  /** 当前阶段专用的临时叙述（如小事件文本、互动节点文本） */
+  stageNarrative?: string
 }
 
 export interface Snapshot {
@@ -137,11 +145,13 @@ export class RunEngine {
       interact: null,
       phaseHint: '',
       monthLog: [],
+      stageNarrative: undefined,
     }
 
     this.enterMonth(this.state.monthIndex)
   }
 
+  // ---------- 工具 ----------
   private ctx(): EvalContext {
     return {
       identityTags: new Set(),
@@ -162,6 +172,12 @@ export class RunEngine {
     return this.script.events.find((e) => e.id === id)
   }
 
+  /** 追加一条日志到本月累积 */
+  private log(s: string) {
+    if (s) this.state.monthLog.push(s)
+  }
+
+  // ---------- 进入新月 ----------
   private enterMonth(monthIndex: number) {
     const md = this.script.timeline.find((m) => m.index === monthIndex)
     if (!md) { this.finish(); return }
@@ -173,8 +189,8 @@ export class RunEngine {
     this.state.mainChoice = undefined
     this.state.bondTargetId = undefined
     this.state.feedback = undefined
-    this.state.flashNarrative = undefined
     this.state.monthLog = []
+    this.state.stageNarrative = undefined
 
     this.state.monthRuntime = {
       index: md.index,
@@ -193,6 +209,7 @@ export class RunEngine {
     }
   }
 
+  // ---------- 主选项 ----------
   private handleMainChoice(choiceId: string) {
     if (choiceId.startsWith('bond:')) {
       this.state.mainChoice = 'bond'
@@ -200,9 +217,10 @@ export class RunEngine {
       this.state.bondTargetId = targetId
       const npc = this.script.npcs.find((n) => n.id === targetId)
       const bump = npc?.relation === '友' ? 8 : npc?.relation === '尊' ? 5 : 4
-      this.state.player.affinity[targetId] =
-        (this.state.player.affinity[targetId] ?? 0) + bump
+      const before = this.state.player.affinity[targetId] ?? 0
+      this.state.player.affinity[targetId] = before + bump
       this.enforceAffinityCap()
+      const after = this.state.player.affinity[targetId] ?? 0
       this.state.feedback = {
         self:
           `你试着和${npc?.name ?? '某人'}多待了一会儿。` +
@@ -210,6 +228,7 @@ export class RunEngine {
         peers: '班里同学对此有点好奇。',
         special: npc?.relation === '谜' ? 'TA 看你的眼神，比往常多停留了一秒。' : undefined,
       }
+      this.log(`好感 · ${npc?.name ?? targetId} ${after - before >= 0 ? '+' : ''}${after - before}`)
     } else if (choiceId === 'study') {
       this.state.mainChoice = 'study'
       this.state.feedback = {
@@ -241,6 +260,7 @@ export class RunEngine {
     }
   }
 
+  // ---------- 小事件 ----------
   private rollSmallEvent(): boolean {
     const base = 0.4
     let mainBonus = 0
@@ -264,7 +284,7 @@ export class RunEngine {
   private runSmallEvent() {
     const happened = this.rollSmallEvent()
     if (!happened) {
-      this.state.flashNarrative = '这个月没有发生什么特别的意外。'
+      this.state.stageNarrative = '这个月没有发生什么特别的意外。'
     } else {
       const variants = [
         '课间，走廊尽头的窗子外面，有一只黑鸟一直盯着你看。',
@@ -272,12 +292,13 @@ export class RunEngine {
         '某个午后你忽然头晕，眼前的课本一页页翻过去，像在快进。',
       ]
       const idx = this.rng.weightedIndex(variants.map(() => 1))
-      this.state.flashNarrative = variants[idx >= 0 ? idx : 0]
+      this.state.stageNarrative = variants[idx >= 0 ? idx : 0]
     }
     this.state.monthRuntime.phase = 'smallEvent'
     this.state.phaseHint = '小事件'
   }
 
+  // ---------- 固定事件 / 随机互动推进 ----------
   private toFixedOrInteract1() {
     if (this.state.monthRuntime.isEventMonth && this.state.monthRuntime.fixedEventId) {
       this.state.monthRuntime.phase = 'fixedEvent'
@@ -309,7 +330,8 @@ export class RunEngine {
     if (!pool.length) return null
     const filtered = pool.filter((e) => {
       if (mode === 'shortOnly' && e.kind !== 'short') return false
-      if (e.requires?.hasCrush && !this.state.player.crushId) return false
+      // hasCrush: true 且玩家尚未指定 crush → 过滤掉（本批预期如此）
+      if (e.requires?.hasCrush === true && !this.state.player.crushId) return false
       if (e.requires?.identityFactor && e.requires.identityFactor !== this.state.player.identityFactor) return false
       return true
     })
@@ -332,7 +354,7 @@ export class RunEngine {
     } else {
       this.state.monthRuntime.opportunityUsed = isFirst ? 1 : 2
     }
-    this.state.flashNarrative = event.root.text
+    this.state.stageNarrative = event.root.text
     this.state.phaseHint = isFirst ? '随机互动①' : '随机互动②'
     this.refreshInteractChoices()
     if (rt.pendingChoices.length === 0) {
@@ -350,6 +372,7 @@ export class RunEngine {
         const r = src.requires
         if (!r) return true
         if (r.identityFactor && r.identityFactor !== this.state.player.identityFactor) return false
+        if (r.hasCrush === true && !this.state.player.crushId) return false
         return true
       })
   }
@@ -359,6 +382,9 @@ export class RunEngine {
     if (!rt) { this.finishInteract(); return }
     const picked = rt.pendingChoices.find((c) => c.id === choiceId)
     if (!picked) return
+
+    // 玩家点了选项，先把上一个节点的文本沉淀进月志（保证可回看）
+    if (rt.node.text) this.log(rt.node.text)
 
     const nextRaw = picked.src.next
     if (!nextRaw) {
@@ -372,7 +398,7 @@ export class RunEngine {
       const mutual = this.rng.chance(0.6)
       const chosen = mutual ? branches.byMutual : branches.byOneSide
       rt.node = chosen
-      this.state.flashNarrative = chosen.text
+      this.state.stageNarrative = chosen.text
       if (mutual && rt.kind === 'maybeLong' && !rt.becameLong) {
         rt.becameLong = true
         this.state.monthRuntime.opportunityUsed = 2
@@ -384,7 +410,7 @@ export class RunEngine {
 
     const nextNode = nextRaw as InteractNode
     rt.node = nextNode
-    this.state.flashNarrative = nextNode.text
+    this.state.stageNarrative = nextNode.text
     this.refreshInteractChoices()
     if (rt.pendingChoices.length === 0) {
       this.finishInteract()
@@ -392,6 +418,8 @@ export class RunEngine {
   }
 
   private finishInteract() {
+    // 交互结束：把最后一个节点的文本也沉淀进月志
+    if (this.state.interact?.node.text) this.log(this.state.interact.node.text)
     const used = this.state.monthRuntime.opportunityUsed
     if (used >= 2) {
       this.toSummary()
@@ -470,32 +498,37 @@ export class RunEngine {
     }
   }
 
+  /** 拼出"月志"区块：保证累积日志在每段顶部可见 */
+  private monthLogBlock(): string {
+    if (this.state.monthLog.length === 0) return ''
+    return '【本月已发生】\n' + this.state.monthLog.map((l) => '· ' + l).join('\n') + '\n\n'
+  }
+
   private buildPhaseView(md: MonthDef): { narrative: string; choices: { id: string; text: string }[] } {
     const ph = this.state.monthRuntime.phase
-    const lines: string[] = []
-    lines.push(`第 ${md.year} 学年 · ${md.month} 月 · ${md.type === 'holiday' ? '假期' : '上学'}`)
-    lines.push(this.identityHint())
-    lines.push('')
+    const head: string[] = []
+    head.push(`第 ${md.year} 学年 · ${md.month} 月 · ${md.type === 'holiday' ? '假期' : '上学'}`)
+    head.push(this.identityHint())
+    head.push('')
+
+    // 所有阶段都把累积月志放前面
+    const prefix = head.join('\n') + '\n' + this.monthLogBlock()
 
     if (ph === 'holidaySkip') {
-      lines.push('（假期）这个月不上学。')
-      return { narrative: lines.join('\n'), choices: [{ id: CHOICE_SKIP, text: '（假期）跳过' }] }
+      return {
+        narrative: prefix + '（假期）这个月不上学。',
+        choices: [{ id: CHOICE_SKIP, text: '（假期）跳过' }],
+      }
     }
 
     if (ph === 'intro') {
-      lines.push('【导入】')
       const ev = this.eventById(md.fixedEvent)
-      if (ev) {
-        lines.push(`${ev.title}：`)
-        lines.push(ev.narrative)
-      } else {
-        lines.push('这个月和往常一样。')
-      }
-      return { narrative: lines.join('\n'), choices: [{ id: 'intro_next', text: '继续' }] }
+      const body = ev ? `【导入】\n${ev.title}：\n${ev.narrative}` : '【导入】\n这个月和往常一样。'
+      return { narrative: prefix + body, choices: [{ id: 'intro_next', text: '继续' }] }
     }
 
     if (ph === 'mainChoice') {
-      lines.push('【主选项】你把这个月花在哪里？')
+      const lines = [prefix + '【主选项】你把这个月花在哪里？']
       const choices: { id: string; text: string }[] = [{ id: 'study', text: '学习' }]
       for (const npc of this.script.npcs) {
         choices.push({ id: `bond:${npc.id}`, text: `拉近关系 · ${npc.name}` })
@@ -504,7 +537,7 @@ export class RunEngine {
     }
 
     if (ph === 'feedback') {
-      lines.push('【反馈】')
+      const lines = [prefix + '【反馈】']
       if (this.state.feedback) {
         lines.push('自己：' + this.state.feedback.self)
         lines.push('身边：' + this.state.feedback.peers)
@@ -514,44 +547,46 @@ export class RunEngine {
     }
 
     if (ph === 'smallEvent') {
-      lines.push('【小事件】')
-      lines.push(this.state.flashNarrative ?? '这个月没有特别的事。')
-      return { narrative: lines.join('\n'), choices: [{ id: 'small_next', text: '继续' }] }
+      return {
+        narrative: prefix + '【小事件】\n' + (this.state.stageNarrative ?? '这个月没有特别的事。'),
+        choices: [{ id: 'small_next', text: '继续' }],
+      }
     }
 
     if (ph === 'fixedEvent') {
       const ev = this.eventById(this.state.monthRuntime.fixedEventId)
-      lines.push(`【固定事件】${ev?.title ?? ''}`)
-      if (ev) lines.push(ev.narrative)
+      let body = `【固定事件】${ev?.title ?? ''}`
+      if (ev) body += '\n' + ev.narrative
       const ctx = this.ctx()
       const choices = (ev?.choices ?? [])
         .filter((c) => evalCondition(c.require, ctx))
         .map((c) => ({ id: c.id, text: c.text }))
-      return { narrative: lines.join('\n'), choices }
+      return { narrative: prefix + body, choices }
     }
 
     if (ph === 'interact1' || ph === 'interact2') {
-      lines.push(`【${ph === 'interact1' ? '随机互动①' : '随机互动②'}】`)
       const rt = this.state.interact
+      let body = `【${ph === 'interact1' ? '随机互动①' : '随机互动②'}】`
       if (!rt) {
-        lines.push('（本月没有发生随机互动。）')
-        return { narrative: lines.join('\n'), choices: [{ id: 'interact_next', text: '继续' }] }
+        body += '\n（本月没有发生随机互动。）'
+        return { narrative: prefix + body, choices: [{ id: 'interact_next', text: '继续' }] }
       }
-      lines.push(rt.node.text)
+      body += '\n' + (this.state.stageNarrative ?? rt.node.text)
       const choices = rt.pendingChoices.map((c) => ({ id: c.id, text: c.text }))
       if (choices.length === 0) {
-        return { narrative: lines.join('\n'), choices: [{ id: 'interact_next', text: '继续' }] }
+        return { narrative: prefix + body, choices: [{ id: 'interact_next', text: '继续' }] }
       }
-      return { narrative: lines.join('\n'), choices }
+      return { narrative: prefix + body, choices }
     }
 
     if (ph === 'summary') {
-      lines.push('【本月反馈】')
-      lines.push('这个月结束了。')
-      return { narrative: lines.join('\n'), choices: [{ id: 'summary_next', text: '进入下个月' }] }
+      return {
+        narrative: prefix + '【本月反馈】\n这个月结束了。',
+        choices: [{ id: 'summary_next', text: '进入下个月' }],
+      }
     }
 
-    return { narrative: lines.join('\n'), choices: [] }
+    return { narrative: prefix, choices: [] }
   }
 
   private identityHint(): string {
@@ -561,6 +596,7 @@ export class RunEngine {
     return '（你偶尔能感觉到，有什么东西在躲着你。）'
   }
 
+  // ---------- 选择入口 ----------
   choose(choiceId: string): Snapshot {
     if (this.state.finished) return this.snapshot()
     const ph = this.state.monthRuntime.phase
@@ -589,7 +625,12 @@ export class RunEngine {
     }
 
     if (ph === 'smallEvent') {
-      if (choiceId === 'small_next') this.toFixedOrInteract1()
+      if (choiceId === 'small_next') {
+        // 小事件文本沉淀进月志，避免后续阶段看不到
+        if (this.state.stageNarrative) this.log('小事件：' + this.state.stageNarrative)
+        this.state.stageNarrative = undefined
+        this.toFixedOrInteract1()
+      }
       return this.emitAndSnap()
     }
 
@@ -602,8 +643,11 @@ export class RunEngine {
         this.state.player.affinity = ctx.affinity
         this.state.player.flags = ctx.flags
         this.state.player.goalProgress = ctx.goalProgress
-        if (logs.length) this.state.flashNarrative = logs.join('\n')
         this.enforceAffinityCap()
+        // 记录玩家做了什么
+        this.log(`固定事件 · ${ev?.title ?? ''} → ${choice.text}`)
+        // 记录效果文本
+        for (const l of logs) this.log(l)
       }
       this.toInteract1()
       return this.emitAndSnap()
