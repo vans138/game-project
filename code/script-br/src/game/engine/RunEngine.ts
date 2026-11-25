@@ -1,13 +1,4 @@
-// 局内引擎 v5：8 阶段月流程 + 身份因子 + 关系简化 + 随机互动机会池。
-//
-// 月流程 8 阶段（详见 docs/month_flow.md）：
-//   ① 导入 → ② 主选项 → ③ 反馈 → ④ 小事件 → ⑤ 固定事件（仅事件月）
-//   → ⑥ 随机互动① → ⑦ 随机互动②（条件性）→ ⑧ 本月反馈 → 下月
-//
-// 假期月（type='holiday'）本批走简化流程：只有"跳过"。
-//
-// 注意：本批 interactEvents 为空池，引擎能跑通但抽不到东西。
-//       这是骨架阶段，内容下一批填。
+// 局内引擎 v6：8 阶段月流程 + 身份因子 + 关系 + 随机互动树（完整）
 
 import type {
   Script,
@@ -15,13 +6,13 @@ import type {
   MonthDef,
   InteractEvent,
   InteractNode,
+  InteractChoice,
   IdentityFactorId,
 } from '../script/types'
 import { evalCondition, applyEffects, type EvalContext } from './evaluator'
 import type { Rng } from './rng'
 import { createRng } from './rng'
 
-// ---------- 玩家运行时 ----------
 interface PlayerRuntime {
   identityId: string
   identityFactor: IdentityFactorId
@@ -31,7 +22,6 @@ interface PlayerRuntime {
   crushId?: string
 }
 
-// ---------- 月阶段 ----------
 export type MonthPhase =
   | 'intro'
   | 'mainChoice'
@@ -54,8 +44,10 @@ interface MonthRuntime {
 
 interface InteractRuntime {
   eventId: string
+  kind: 'short' | 'maybeLong' | 'long'
   node: InteractNode
   becameLong: boolean
+  pendingChoices: { id: string; text: string; src: InteractChoice }[]
 }
 
 interface RunState {
@@ -71,9 +63,9 @@ interface RunState {
   feedback?: { self: string; peers: string; special?: string }
   flashNarrative?: string
   phaseHint: string
+  monthLog: string[]
 }
 
-// ---------- 对外快照 ----------
 export interface Snapshot {
   monthIndex: number
   year: number
@@ -114,7 +106,6 @@ export class RunEngine {
     const identity = script.identities.find((i) => i.id === identityId) ?? script.identities[0]
     this.rng = createRng(seed ?? hashSeed(identity.id + ':' + Date.now()))
 
-    // 身份因子：从 identityFactorPool 随机抽一个（本批必是两项之一），玩家不可见
     const pool = identity.identityFactorPool
     const idx = this.rng.weightedIndex(pool.map(() => 1))
     const picked: IdentityFactorId = pool[idx >= 0 ? idx : 0] ?? 'seal'
@@ -145,12 +136,12 @@ export class RunEngine {
       },
       interact: null,
       phaseHint: '',
+      monthLog: [],
     }
 
     this.enterMonth(this.state.monthIndex)
   }
 
-  // ---------- 上下文 ----------
   private ctx(): EvalContext {
     return {
       identityTags: new Set(),
@@ -171,7 +162,6 @@ export class RunEngine {
     return this.script.events.find((e) => e.id === id)
   }
 
-  // ---------- 进入新月 ----------
   private enterMonth(monthIndex: number) {
     const md = this.script.timeline.find((m) => m.index === monthIndex)
     if (!md) { this.finish(); return }
@@ -184,6 +174,7 @@ export class RunEngine {
     this.state.bondTargetId = undefined
     this.state.feedback = undefined
     this.state.flashNarrative = undefined
+    this.state.monthLog = []
 
     this.state.monthRuntime = {
       index: md.index,
@@ -202,43 +193,94 @@ export class RunEngine {
     }
   }
 
-  // ---------- 阶段推进 ----------
+  // ---------- 主选项 ----------
   private handleMainChoice(choiceId: string) {
     if (choiceId.startsWith('bond:')) {
       this.state.mainChoice = 'bond'
-      this.state.bondTargetId = choiceId.slice('bond:'.length)
+      const targetId = choiceId.slice('bond:'.length)
+      this.state.bondTargetId = targetId
+      const npc = this.script.npcs.find((n) => n.id === targetId)
+      const bump = npc?.relation === '友' ? 8 : npc?.relation === '尊' ? 5 : 4
+      this.state.player.affinity[targetId] =
+        (this.state.player.affinity[targetId] ?? 0) + bump
+      this.enforceAffinityCap()
+      this.state.feedback = {
+        self:
+          `你试着和${npc?.name ?? '某人'}多待了一会儿。` +
+          (npc?.relation === '友' ? '你们聊得比想象中轻松。' : ''),
+        peers: '班里同学对此有点好奇。',
+        special: npc?.relation === '谜' ? 'TA 看你的眼神，比往常多停留了一秒。' : undefined,
+      }
     } else if (choiceId === 'study') {
       this.state.mainChoice = 'study'
+      this.state.feedback = {
+        self: '你把这个月大部分精力放在了书本上。',
+        peers: '班里没什么大事。',
+      }
     } else if (choiceId === 'rest') {
       this.state.mainChoice = 'rest'
+      this.state.feedback = {
+        self: '这个月你没有刻意做什么。',
+        peers: '时间静静过去。',
+      }
     } else {
       return
     }
-    this.state.feedback = this.buildFeedback()
     this.state.monthRuntime.phase = 'feedback'
     this.state.phaseHint = '反馈'
   }
 
-  private buildFeedback(): { self: string; peers: string; special?: string } {
-    if (this.state.mainChoice === 'study') {
-      return { self: '你把这个月大部分精力放在了书本上。', peers: '班里没什么大事。' }
+  private enforceAffinityCap() {
+    const cap = this.script.affinityCap
+    const aff = this.state.player.affinity
+    let positiveSum = 0
+    for (const k of Object.keys(aff)) positiveSum += Math.max(0, aff[k])
+    if (positiveSum <= cap) return
+    const ratio = cap / positiveSum
+    for (const k of Object.keys(aff)) {
+      if (aff[k] > 0) aff[k] = Math.floor(aff[k] * ratio)
     }
-    if (this.state.mainChoice === 'bond') {
-      const npc = this.script.npcs.find((n) => n.id === this.state.bondTargetId)
-      return {
-        self: `你试着和${npc?.name ?? '某人'}多待了一会儿。`,
-        peers: '班里同学对此有点好奇。',
-      }
-    }
-    return { self: '这个月你没有刻意做什么。', peers: '时间静静过去。' }
   }
 
-  private toSmallEvent() {
-    this.state.flashNarrative = undefined
+  // ---------- 小事件 ----------
+  private rollSmallEvent(): boolean {
+    const base = 0.4
+    let mainBonus = 0
+    if (this.state.mainChoice === 'study') mainBonus = 0.25
+    else if (this.state.mainChoice === 'bond') mainBonus = 0.25
+
+    let relationMod = 0
+    if (this.state.mainChoice === 'study') {
+      const tid = this.state.bondTargetId
+      const v = tid ? (this.state.player.affinity[tid] ?? 0) : 0
+      if (tid && v < 10) relationMod = -0.4
+      else relationMod = 0.01
+    } else if (this.state.mainChoice === 'bond') {
+      relationMod = 0.15
+    }
+
+    const p = Math.max(0, Math.min(1, base + mainBonus + relationMod))
+    return this.rng.chance(p)
+  }
+
+  private runSmallEvent() {
+    const happened = this.rollSmallEvent()
+    if (!happened) {
+      this.state.flashNarrative = '这个月没有发生什么特别的意外。'
+    } else {
+      const variants = [
+        '课间，走廊尽头的窗子外面，有一只黑鸟一直盯着你看。',
+        '放学时你在储物柜里发现一张没有落款的纸条，只写了两个字：“小心。”',
+        '某个午后你忽然头晕，眼前的课本一页页翻过去，像在快进。',
+      ]
+      const idx = this.rng.weightedIndex(variants.map(() => 1))
+      this.state.flashNarrative = variants[idx >= 0 ? idx : 0]
+    }
     this.state.monthRuntime.phase = 'smallEvent'
     this.state.phaseHint = '小事件'
   }
 
+  // ---------- 固定事件 / 随机互动推进 ----------
   private toFixedOrInteract1() {
     if (this.state.monthRuntime.isEventMonth && this.state.monthRuntime.fixedEventId) {
       this.state.monthRuntime.phase = 'fixedEvent'
@@ -253,7 +295,7 @@ export class RunEngine {
     this.state.phaseHint = '随机互动①'
     const picked = this.pickInteract('all')
     if (!picked) { this.toInteract2(); return }
-    this.startInteract(picked, /* isFirst */ true)
+    this.startInteract(picked, true)
   }
 
   private toInteract2() {
@@ -262,10 +304,10 @@ export class RunEngine {
     this.state.phaseHint = '随机互动②'
     const picked = this.pickInteract('shortOnly')
     if (!picked) { this.toSummary(); return }
-    this.startInteract(picked, /* isFirst */ false)
+    this.startInteract(picked, false)
   }
 
-  /** 池子为空 → 返回 null（骨架阶段恒为 null） */
+  // 抽取随机互动事件：mode='shortOnly' 时只留 kind==='short'
   private pickInteract(mode: 'all' | 'shortOnly'): InteractEvent | null {
     const pool = this.script.interactEvents
     if (!pool.length) return null
@@ -280,8 +322,16 @@ export class RunEngine {
     return idx >= 0 ? filtered[idx] : null
   }
 
+  // 开始一次交互：把当前 node 里的选项过滤后缓存到 pendingChoices
   private startInteract(event: InteractEvent, isFirst: boolean) {
-    this.state.interact = { eventId: event.id, node: event.root, becameLong: false }
+    const rt: InteractRuntime = {
+      eventId: event.id,
+      kind: event.kind,
+      node: event.root,
+      becameLong: false,
+      pendingChoices: [],
+    }
+    this.state.interact = rt
     if (event.kind === 'long') {
       this.state.monthRuntime.opportunityUsed = 2
     } else {
@@ -289,14 +339,80 @@ export class RunEngine {
     }
     this.state.flashNarrative = event.root.text
     this.state.phaseHint = isFirst ? '随机互动①' : '随机互动②'
+    this.refreshInteractChoices()
+    // 若进入时就是叶节点（无选项），直接视为结束
+    if (rt.pendingChoices.length === 0) {
+      this.finishInteract()
+    }
   }
 
-  private afterInteract() {
-    if (this.state.monthRuntime.opportunityUsed >= 2) {
-      this.toSummary()
-    } else {
-      this.toInteract2()
+  // 过滤当前 node 的选项（按 requires）
+  private refreshInteractChoices() {
+    const rt = this.state.interact
+    if (!rt) return
+    const choices = rt.node.choices ?? []
+    rt.pendingChoices = choices
+      .map((c, i) => ({ id: `ic:${i}`, text: c.text, src: c }))
+      .filter(({ src }) => {
+        const r = src.requires
+        if (!r) return true
+        if (r.identityFactor && r.identityFactor !== this.state.player.identityFactor) return false
+        return true
+      })
+  }
+
+  // 处理一次交互选择
+  private handleInteractChoice(choiceId: string) {
+    const rt = this.state.interact
+    if (!rt) { this.finishInteract(); return }
+    const picked = rt.pendingChoices.find((c) => c.id === choiceId)
+    if (!picked) return
+
+    const nextRaw = picked.src.next
+    if (!nextRaw) {
+      // 无后续：视为结束
+      this.finishInteract()
+      return
     }
+
+    // 判断是否为 {byMutual, byOneSide} 分叉
+    if (typeof (nextRaw as { byMutual?: unknown }).byMutual === 'object' &&
+        typeof (nextRaw as { byOneSide?: unknown }).byOneSide === 'object') {
+      const branches = nextRaw as { byMutual: InteractNode; byOneSide: InteractNode }
+      // "对方是否也主动"的判定：单机 MVP 用「交互事件的相关 NPC 好感」近似
+      // 简化策略：本批先随机判定（后续接 crush / 好感阈值）
+      const mutual = this.rng.chance(0.6)
+      const chosen = mutual ? branches.byMutual : branches.byOneSide
+      rt.node = chosen
+      this.state.flashNarrative = chosen.text
+      // 若进入 byMutual 且事件是 maybeLong → 触发变长
+      if (mutual && rt.kind === 'maybeLong' && !rt.becameLong) {
+        rt.becameLong = true
+        this.state.monthRuntime.opportunityUsed = 2
+      }
+      this.refreshInteractChoices()
+      if (rt.pendingChoices.length === 0) this.finishInteract()
+      return
+    }
+
+    // 普通节点跳转
+    const nextNode = nextRaw as InteractNode
+    rt.node = nextNode
+    this.state.flashNarrative = nextNode.text
+    this.refreshInteractChoices()
+    if (rt.pendingChoices.length === 0) {
+      this.finishInteract()
+    }
+  }
+
+  // 交互收束：根据 opportunityUsed 决定进 ② 还是总结
+  private finishInteract() {
+    const used = this.state.monthRuntime.opportunityUsed
+    if (used >= 2) {
+      this.toSummary()
+      return
+    }
+    this.toInteract2()
   }
 
   private toSummary() {
@@ -304,7 +420,6 @@ export class RunEngine {
     this.state.phaseHint = '本月反馈'
   }
 
-  // ---------- 推进到下一月 ----------
   private advanceMonth() {
     const currentMd = this.monthDef()
     if (!currentMd) { this.finish(); return }
@@ -313,7 +428,6 @@ export class RunEngine {
     this.enterMonth(next.index)
   }
 
-  // ---------- 结局 ----------
   private finish() {
     this.state.finished = true
     this.state.monthRuntime.phase = 'done'
@@ -372,7 +486,6 @@ export class RunEngine {
     }
   }
 
-  /** 按当前阶段生成叙述与选项 */
   private buildPhaseView(md: MonthDef): { narrative: string; choices: { id: string; text: string }[] } {
     const ph = this.state.monthRuntime.phase
     const lines: string[] = []
@@ -387,9 +500,13 @@ export class RunEngine {
 
     if (ph === 'intro') {
       lines.push('【导入】')
-      lines.push(md.fixedEvent ? '这个月有一件你早就知道的大事。' : '这个月和往常一样。')
       const ev = this.eventById(md.fixedEvent)
-      if (ev) lines.push(`${ev.title}：${ev.narrative}`)
+      if (ev) {
+        lines.push(`${ev.title}：`)
+        lines.push(ev.narrative)
+      } else {
+        lines.push('这个月和往常一样。')
+      }
       return { narrative: lines.join('\n'), choices: [{ id: 'intro_next', text: '继续' }] }
     }
 
@@ -414,7 +531,7 @@ export class RunEngine {
 
     if (ph === 'smallEvent') {
       lines.push('【小事件】')
-      lines.push(this.state.flashNarrative ?? '这个月没有特别的意外。')
+      lines.push(this.state.flashNarrative ?? '这个月没有特别的事。')
       return { narrative: lines.join('\n'), choices: [{ id: 'small_next', text: '继续' }] }
     }
 
@@ -431,12 +548,17 @@ export class RunEngine {
 
     if (ph === 'interact1' || ph === 'interact2') {
       lines.push(`【${ph === 'interact1' ? '随机互动①' : '随机互动②'}】`)
-      lines.push(this.state.flashNarrative ?? '（本月没有发生随机互动。）')
-      if (this.state.interact?.node.choices) {
-        const choices = this.state.interact.node.choices.map((c, i) => ({ id: `ic:${i}`, text: c.text }))
-        return { narrative: lines.join('\n'), choices }
+      const rt = this.state.interact
+      if (!rt) {
+        lines.push('（本月没有发生随机互动。）')
+        return { narrative: lines.join('\n'), choices: [{ id: 'interact_next', text: '继续' }] }
       }
-      return { narrative: lines.join('\n'), choices: [{ id: 'interact_next', text: '继续' }] }
+      lines.push(rt.node.text)
+      const choices = rt.pendingChoices.map((c) => ({ id: c.id, text: c.text }))
+      if (choices.length === 0) {
+        return { narrative: lines.join('\n'), choices: [{ id: 'interact_next', text: '继续' }] }
+      }
+      return { narrative: lines.join('\n'), choices }
     }
 
     if (ph === 'summary') {
@@ -448,7 +570,6 @@ export class RunEngine {
     return { narrative: lines.join('\n'), choices: [] }
   }
 
-  /** 身份因子暗示：玩家可见的"模糊"叙述（不暴露 seal/ancient） */
   private identityHint(): string {
     if (this.state.player.identityFactor === 'seal') {
       return '（你偶尔能听见自己体内，还有另一个心跳。）'
@@ -456,7 +577,7 @@ export class RunEngine {
     return '（你偶尔能感觉到，有什么东西在躲着你。）'
   }
 
-  // ---------- 玩家选择入口 ----------
+  // ---------- 选择入口 ----------
   choose(choiceId: string): Snapshot {
     if (this.state.finished) return this.snapshot()
     const ph = this.state.monthRuntime.phase
@@ -480,7 +601,7 @@ export class RunEngine {
     }
 
     if (ph === 'feedback') {
-      if (choiceId === 'feedback_next') this.toSmallEvent()
+      if (choiceId === 'feedback_next') this.runSmallEvent()
       return this.emitAndSnap()
     }
 
@@ -499,14 +620,18 @@ export class RunEngine {
         this.state.player.flags = ctx.flags
         this.state.player.goalProgress = ctx.goalProgress
         if (logs.length) this.state.flashNarrative = logs.join('\n')
+        this.enforceAffinityCap()
       }
       this.toInteract1()
       return this.emitAndSnap()
     }
 
     if (ph === 'interact1' || ph === 'interact2') {
-      // 骨架阶段：交互树尚未展开，直接视为「结束此交互」推进
-      this.afterInteract()
+      if (choiceId === 'interact_next') {
+        this.finishInteract()
+      } else {
+        this.handleInteractChoice(choiceId)
+      }
       return this.emitAndSnap()
     }
 
