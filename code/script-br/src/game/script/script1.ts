@@ -1,186 +1,64 @@
-// 第一份剧本：青川中学 · 三年（9月 → 三年后9月录取）
-// v4.3：
-//   - 新增 clues 数组（每条带 factorId，指向投影它的因子）
-//   - 每个未来组加入"终结成员"（special:'terminate'，默认 chance:0）
-//   - e_holiday_family 的 c1（主动调解）接 setTerminate，将"家族线终结概率"推为 1
+// 第一份剧本（v5）：青川中学 · Y1 上学期 + 寒假（Y1-9 ~ Y2-2）
+// 相对 v4.3 的变更：
+//   1) 删掉冲突顶层数据，改为身份驱动
+//   2) 引入 identities（本批只有龙烬余孤）
+//   3) timeline 重排：11 月期中、1 月期末、2 月寒假
+//   4) interactEvents 先留空数组（骨架阶段）
+//   5) 世界因子本批不激活：保留 factorPool / factorGroups 但只留一两个占位
 
 import type {
   Script,
   MonthDef,
-  Conflict,
-  ConflictLink,
-  ConflictEventLink,
-  ConflictNpcEffect,
   FactorDef,
   FactorGroup,
-  Clue,
+  IdentityDef,
 } from './types'
 
-// ---------- 矛盾点 ----------
-const conflicts: Conflict[] = [
+// ---------- 玄幻身份：龙烬余孤 ----------
+// 选择的身份 → 随机从 pool 里抽一个身份因子（玩家不可见）
+const identities: IdentityDef[] = [
   {
-    id: 'c_parents',
-    title: '父母不合',
-    parties: ['家族', 'npc_lin'],
-    tags: ['family', 'vampire', 'spirit'],
-    data: { demandA: '希望孩子留在家族', demandB: '希望孩子远离家族', solvePaths: ['调解', '选边', '隐瞒'], fog: 3 },
-  },
-  {
-    id: 'c_old_door',
-    title: '旧楼那扇门',
-    parties: ['npc_moon', 'npc_gu', 'npc_yao'],
-    tags: ['campus', 'truth'],
-    data: { fog: 5, witness: 'npc_gu' },
-  },
-  {
-    id: 'c_top_rank',
-    title: '年级第一之争',
-    parties: ['npc_shen', 'npc_lin'],
-    tags: ['campus', 'study'],
-    data: { fog: 2, prize: '奖学金名额' },
+    id: 'longjin_yugu',
+    name: '龙烬余孤',
+    desc: '世间最后一条血脉驳杂的龙。你不知道自己是被封印的容器，还是被封印者本身。',
+    identityFactorPool: ['seal', 'ancient'],
   },
 ]
 
-const conflictLinks: ConflictLink[] = [
-  { from: 'c_parents', to: 'c_top_rank', kind: 'mutex', data: { note: '家族把你往学业上推' } },
-  { from: 'c_old_door', to: 'c_parents', kind: 'reveals', data: { note: '门后揭示家族旧事' } },
-]
+// ---------- 因子池（本批不激活世界因子，仅保留占位）----------
+const factorPool: FactorDef[] = []
 
-const conflictEventLinks: ConflictEventLink[] = [
-  { conflictId: 'c_parents', eventId: 'e_open', kind: 'seed', season: 'school' },
-  { conflictId: 'c_parents', eventId: 'e_midterm', kind: 'escalate', season: 'school' },
-  { conflictId: 'c_parents', eventId: 'e_holiday_family', kind: 'resolve', season: 'holiday' },
-  { conflictId: 'c_old_door', eventId: 'e_night', kind: 'spawn', season: 'both' },
-  { conflictId: 'c_old_door', eventId: 'e_year_end', kind: 'escalate', season: 'school' },
-  { conflictId: 'c_top_rank', eventId: 'e_study', kind: 'spawn', season: 'school' },
-]
-
-const conflictNpcEffects: ConflictNpcEffect[] = [
-  { conflictId: 'c_parents', npcId: 'npc_lin', value: -3, reversible: true },
-  { conflictId: 'c_old_door', npcId: 'npc_he', value: 5, reversible: true, require: { flag: 'opened_door' } },
-  { conflictId: 'c_old_door', npcId: 'npc_gu', value: 4, reversible: true },
-]
-
-// ---------- 因子池 ----------
-const factorPool: FactorDef[] = [
-  { id: 'f_family',      title: '家族裂痕' },
-  { id: 'f_oldfloor',    title: '旧楼低语' },
-  { id: 'f_rivalry',     title: '学业竞争' },
-  { id: 'f_new_seatmate', title: '换了同桌' },
-  { id: 'f_rainy_week',   title: '连绵阴雨' },
-  { id: 'f_family_reconciled', title: '家族和解' },
-  { id: 'f_family_broken',     title: '家族决裂' },
-  { id: 'f_door_open',         title: '门被打开' },
-  { id: 'f_door_sealed',       title: '门被封死' },
-]
-
-// ---------- 因子互斥组（含终结成员） ----------
-// 未来组现在包含一个"终结成员"（special:'terminate'，chance 默认 0/1）。
-// 终结为 1 时硬压制其它落点，因子 off；否则从其它落点按概率抽。
-const factorGroups: FactorGroup[] = [
-  {
-    id: 'grp_opening_theme',
-    data: { note: '开局主基调，三选一', gate: 'opening' },
-    members: [
-      { factorId: 'f_family',   chance: 0.45 },
-      { factorId: 'f_oldfloor', chance: 0.35 },
-      { factorId: 'f_rivalry',  chance: 0.2 },
-    ],
-  },
-  {
-    id: 'grp_small_seatmate',
-    members: [{ factorId: 'f_new_seatmate', chance: 0.6 }],
-  },
-  {
-    id: 'grp_small_rain',
-    members: [{ factorId: 'f_rainy_week', chance: 0.3 }],
-  },
-
-  // 家族线未来：落点二选一 + 终结成员（默认 0）
-  {
-    id: 'f_family::future',
-    special: 'future',
-    data: { ownerFactorId: 'f_family' },
-    members: [
-      { factorId: 'f_family_reconciled', chance: 0.6 },
-      { factorId: 'f_family_broken',     chance: 0.4 },
-      { factorId: 'f_family::terminate', chance: 0, special: 'terminate' },
-    ],
-  },
-
-  // 旧楼线未来：落点二选一 + 终结成员（默认 0）
-  {
-    id: 'f_oldfloor::future',
-    special: 'future',
-    data: { ownerFactorId: 'f_oldfloor' },
-    members: [
-      { factorId: 'f_door_open',   chance: 0.5 },
-      { factorId: 'f_door_sealed', chance: 0.5 },
-      { factorId: 'f_oldfloor::terminate', chance: 0, special: 'terminate' },
-    ],
-  },
-]
-
-// ---------- 线索（因子投影的触手） ----------
-// 每条线索：factorId = 投影它的因子；conflictId = 指向的矛盾根。
-// depth = 假期可调查步数；调查到 0 = 看清矛盾。
-const clues: Clue[] = [
-  // 家族线（由 f_family 因子投影）
-  { id: 'cl_parents_1', factorId: 'f_family', conflictId: 'c_parents',
-    text: '这个月父母似乎有些许不合，餐桌上总少一个人。', depth: 2 },
-  { id: 'cl_parents_2', factorId: 'f_family', conflictId: 'c_parents',
-    text: '母亲房间的抽屉被换过锁，钥匙不在原来的地方。', depth: 3 },
-
-  // 旧楼线（由 f_oldfloor 因子投影）
-  { id: 'cl_door_1', factorId: 'f_oldfloor', conflictId: 'c_old_door',
-    text: '旧楼三层的走廊尽头，那扇门又出现了，锁上多了新划痕。', depth: 2 },
-  { id: 'cl_door_2', factorId: 'f_oldfloor', conflictId: 'c_old_door',
-    text: '顾伯最近几次看到你，欲言又止。', depth: 2 },
-
-  // 学业线（由 f_rivalry 因子投影）
-  { id: 'cl_rivalry_1', factorId: 'f_rivalry', conflictId: 'c_top_rank',
-    text: '年级排名表被撕了一角，恰好是前五名那栏。', depth: 1 },
-]
+// 互斥组留空，避免本批牵动 factorEvolve 逻辑
+const factorGroups: FactorGroup[] = []
 
 // ---------- 时间轴 ----------
+// 本批只铺 Y1-9 到 Y2-2 共 6 个月：
+//   Y1-9  开学月（事件月：开学，导入用）
+//   Y1-10 普通月
+//   Y1-11 期中月（固定事件：期中考试）
+//   Y1-12 普通月
+//   Y1-1  期末月（固定事件：期末考试）
+//   Y1-2  寒假（假期月，跳过）
 function buildTimeline(): MonthDef[] {
-  const targetMonths: { year: number; month: number }[] = []
-  const years = [1, 2, 3]
-  const order = [9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8]
-  for (const y of years) for (const m of order) targetMonths.push({ year: y, month: m })
-  targetMonths.push({ year: 3, month: 9 })
-
-  return targetMonths.map(({ year, month }, i) => {
-    const index = i + 1
-    const isHoliday = month === 7 || month === 8 || month === 1 || month === 2
-    const type: MonthDef['type'] = isHoliday ? 'holiday' : 'school'
-    const def: MonthDef = { index, year, month, type, stepCount: isHoliday ? 3 : 2, silentStudy: type === 'school' }
-
-    if (year === 1 && month === 9) def.fixedEvent = 'e_open'
-    if (year === 1 && month === 11) def.fixedEvent = 'e_midterm'
-    if (year === 3 && month === 9) def.fixedEvent = 'e_admission'
-    if (year !== 1 && month === 9) def.fixedEvent = 'e_open'
-
-    if (!def.fixedEvent) {
-      if (type === 'school') def.randomPool = ['e_club', 'e_night', 'e_study', 'e_sports', 'e_midterm']
-      else def.randomPool = ['e_night', 'e_holiday_family', 'e_sports']
-    }
-    return def
-  })
+  return [
+    { index: 1, year: 1, month: 9,  type: 'school',  stepCount: 2, fixedEvent: 'e_term_open',    silentStudy: true },
+    { index: 2, year: 1, month: 10, type: 'school',  stepCount: 2,                                silentStudy: true },
+    { index: 3, year: 1, month: 11, type: 'school',  stepCount: 2, fixedEvent: 'e_mid_exam',     silentStudy: true },
+    { index: 4, year: 1, month: 12, type: 'school',  stepCount: 2,                                silentStudy: true },
+    { index: 5, year: 1, month: 1,  type: 'school',  stepCount: 2, fixedEvent: 'e_final_exam',   silentStudy: true },
+    { index: 6, year: 1, month: 2,  type: 'holiday', stepCount: 1,                                silentStudy: false },
+  ]
 }
 
+// ---------- 剧本导出 ----------
 export const SCRIPT_1: Script = {
-  id: 'campus-3y-01',
+  id: 'campus-y1-upper',
   meta: { title: '轮回校园', era: '当代', place: '青川中学' },
 
-  roles: [
-    { id: 'r1', name: '林知夏', surfaceTask: '顺利毕业，进入学生会。', privateGoalId: 'g_truth', identityTags: ['vampire'] },
-    { id: 'r2', name: '陈默', surfaceTask: '拿下年级第一。', privateGoalId: 'g_friend', identityTags: ['human'] },
-    { id: 'r3', name: '苏晚', surfaceTask: '组建社团并存活到毕业。', privateGoalId: 'g_secret', identityTags: ['human'] },
-    { id: 'r4', name: '顾言', surfaceTask: '成为全校最受欢迎的人。', privateGoalId: 'g_truth', identityTags: ['human'] },
-    { id: 'r5', name: '白露', surfaceTask: '平安读完三年。', privateGoalId: 'g_friend', identityTags: ['spirit'] },
-    { id: 'r6', name: '周野', surfaceTask: '在运动会上夺冠。', privateGoalId: 'g_secret', identityTags: ['human'] },
-  ],
+  identities,
+
+  // 身份取代角色后，roles 本批保留占位（UI 不再用）
+  roles: [],
 
   npcs: [
     { id: 'npc_lin',   name: '林老师',   type: 'resident', personality: '严肃公正', affinityStart: 10, persistAcrossRuns: true, place: '教学楼', relation: '尊' },
@@ -191,125 +69,61 @@ export const SCRIPT_1: Script = {
     { id: 'npc_jiang', name: '江晴',     type: 'resident', personality: '开朗体委', affinityStart: 10, persistAcrossRuns: true, place: '操场',   relation: '友' },
     { id: 'npc_he',    name: '何老师',   type: 'resident', personality: '温和心理', affinityStart: 15, persistAcrossRuns: true, place: '办公室', relation: '尊' },
     { id: 'npc_gu',    name: '顾伯',     type: 'resident', personality: '沉默校工', affinityStart: 5,  persistAcrossRuns: true, place: '旧楼',   relation: '谜' },
-    { id: 'npc_rand1', name: '转学生',   type: 'random',   personality: '随机',     affinityStart: 5,  persistAcrossRuns: false, place: '教室',  relation: '友' },
-    { id: 'npc_rand2', name: '社团新人', type: 'random',   personality: '随机',     affinityStart: 5,  persistAcrossRuns: false, place: '社团',  relation: '友' },
-    { id: 'npc_rand3', name: '神秘访客', type: 'random',   personality: '随机',     affinityStart: 0,  persistAcrossRuns: false, place: '旧楼',  relation: '谜' },
   ],
 
   goals: [
-    { id: 'g_truth', title: '揭开轮回真相', target: 5 },
-    { id: 'g_friend', title: '赢得一个真心朋友', target: 5 },
-    { id: 'g_secret', title: '守护一个秘密到毕业', target: 5 },
+    { id: 'g_truth',  title: '揭开轮回真相',      target: 5 },
+    { id: 'g_bond',   title: '与一个人建立真关系',  target: 5 },
   ],
 
+  // 好感总封顶
   affinityCap: 100,
 
   timeline: buildTimeline(),
 
+  // 事件：本批只给「固定事件」和「最小占位」。内容下一批填。
   events: [
     {
-      id: 'e_open', kind: 'fixed', season: 'school', title: '开学第一天',
-      narrative: '你站在青川中学的校门口，秋风吹过。这里你似乎来过很多次，又似乎第一次来。',
+      id: 'e_term_open',
+      kind: 'fixed', season: 'school',
+      title: '开学典礼',
+      narrative: '九月的操场，升旗、训话、人群。你站在队伍里，忽然有一瞬间说不清自己是谁。',
       choices: [
-        { id: 'c1', text: '去教室报到', effects: [{ type: 'affinity', target: 'npc_qiu', value: 5 }, { type: 'log', text: '你遇见了热情的同桌邱同学。' }] },
-        { id: 'c2', text: '先在校园里逛逛', effects: [{ type: 'goalProgress', target: 'g_truth', value: 1 }, { type: 'log', text: '旧教学楼的方向有奇怪的感觉。' }] },
+        { id: 'c1', text: '跟着人群唱校歌', effects: [] },
+        { id: 'c2', text: '发呆看着天空',   effects: [] },
       ],
     },
     {
-      id: 'e_midterm', kind: 'fixed', season: 'school', title: '期中考试',
-      narrative: '期中成绩贴出来，走廊里人头攒动。你看到一个不该出现的人影一闪而过。',
+      id: 'e_mid_exam',
+      kind: 'fixed', season: 'school',
+      title: '期中考试',
+      narrative: '考试周。考场安静得能听见翻卷声。',
       choices: [
-        { id: 'c1', text: '留下来查成绩', effects: [{ type: 'affinity', target: 'npc_lin', value: 5 }, { type: 'affinity', target: 'npc_shen', value: 5 }] },
-        { id: 'c2', text: '追那个身影', effects: [{ type: 'goalProgress', target: 'g_truth', value: 1 }, { type: 'flag', target: 'saw_shadow' }] },
-        { id: 'c3', text: '先去安慰考砸的朋友', effects: [{ type: 'affinity', target: 'npc_qiu', value: 10 }, { type: 'goalProgress', target: 'g_friend', value: 1 }] },
+        { id: 'c1', text: '认真答题', effects: [] },
+        { id: 'c2', text: '答完提早交卷', effects: [] },
       ],
     },
     {
-      id: 'e_year_end', kind: 'fixed', season: 'school', title: '学年闭幕',
-      narrative: '一年结束。旧教学楼尽头那扇门又出现了，只有你能看见。',
+      id: 'e_final_exam',
+      kind: 'fixed', season: 'school',
+      title: '期末考试',
+      narrative: '一年中最重的一场考试。窗外的树在风里响。',
       choices: [
-        { id: 'c1', text: '推开门', effects: [{ type: 'goalProgress', target: 'g_truth', value: 2 }, { type: 'flag', target: 'opened_door' }] },
-        { id: 'c2', text: '转身离开', effects: [{ type: 'affinity', target: 'npc_moon', value: 10 }, { type: 'goalProgress', target: 'g_secret', value: 1 }] },
-      ],
-    },
-    {
-      id: 'e_club', kind: 'random', season: 'school', title: '社团招新',
-      narrative: '社团摊位排了一长排，有几双眼睛一直跟着你。',
-      choices: [
-        { id: 'c1', text: '加入文学社', effects: [{ type: 'affinity', target: 'npc_qiu', value: 5 }, { type: 'goalProgress', target: 'g_friend', value: 1 }] },
-        { id: 'c2', text: '加入灵异研究社', effects: [{ type: 'affinity', target: 'npc_moon', value: 5 }, { type: 'goalProgress', target: 'g_truth', value: 1 }] },
-        { id: 'c3', text: '自己组建社团', effects: [{ type: 'unlock', target: 'club_founder' }, { type: 'affinity', target: 'npc_rand2', value: 10 }, { type: 'log', text: '你成了新社团的创始人。' }] },
-      ],
-    },
-    {
-      id: 'e_night', kind: 'random', season: 'both', title: '夜探旧楼', fromConflict: 'c_old_door',
-      narrative: '深夜的旧教学楼没有灯。楼梯尽头传来脚步。',
-      choices: [
-        { id: 'c1', text: '跟上去', effects: [{ type: 'flag', target: 'chased_night' }, { type: 'goalProgress', target: 'g_truth', value: 1 }, { type: 'affinity', target: 'npc_gu', value: 5 }] },
-        { id: 'c2', text: '退回宿舍', effects: [{ type: 'affinity', target: 'npc_yao', value: 5 }] },
-        { id: 'c3', text: '推开那扇门', require: { flag: 'opened_door' }, effects: [{ type: 'goalProgress', target: 'g_truth', value: 2 }, { type: 'affinity', target: 'npc_moon', value: 10 }, { type: 'log', text: '门后是你自己的背影。' }] },
-      ],
-    },
-    {
-      id: 'e_study', kind: 'random', season: 'school', title: '考试周', fromConflict: 'c_top_rank',
-      narrative: '图书馆座无虚席，你只有两个选择。',
-      choices: [
-        { id: 'c1', text: '埋头复习', effects: [{ type: 'affinity', target: 'npc_lin', value: 8 }, { type: 'affinity', target: 'npc_shen', value: 8 }] },
-        { id: 'c2', text: '帮同学补课', effects: [{ type: 'affinity', target: 'npc_qiu', value: 8 }, { type: 'goalProgress', target: 'g_friend', value: 1 }] },
-      ],
-    },
-    {
-      id: 'e_sports', kind: 'random', season: 'both', title: '操场训练',
-      narrative: '江晴在操场招手，远处沈星河抱着书走过。',
-      choices: [
-        { id: 'c1', text: '陪江晴训练', effects: [{ type: 'affinity', target: 'npc_jiang', value: 10 }] },
-        { id: 'c2', text: '去和沈星河讨论题目', effects: [{ type: 'affinity', target: 'npc_shen', value: 10 }, { type: 'goalProgress', target: 'g_friend', value: 1 }] },
-      ],
-    },
-    {
-      id: 'e_holiday_family', kind: 'random', season: 'holiday', title: '假期 · 家族宅邸', fromConflict: 'c_parents',
-      narrative: '回到宅邸，父母分坐在长桌两端，都没有先开口。你身上的血脉感在假期里变得清晰。',
-      choices: [
-        // 关键选项：完成调解 → 家族线终结概率上调为 1（下次未来组触发即终结）
-        {
-          id: 'c1', text: '主动调解',
-          effects: [
-            { type: 'goalProgress', target: 'g_friend', value: 1 },
-            { type: 'flag', target: 'tried_mediate' },
-            { type: 'setTerminate', groupId: 'f_family::future', value: 1 },
-            { type: 'log', text: '你试着把两边的话都听了一遍——这条线的结局，由你亲手决定。' },
-          ],
-        },
-        { id: 'c2', text: '选择站在母亲一边', effects: [{ type: 'goalProgress', target: 'g_secret', value: 1 }, { type: 'affinity', target: 'npc_lin', value: -5 }] },
-        { id: 'c3', text: '回房独自翻找旧物', effects: [{ type: 'goalProgress', target: 'g_truth', value: 1 }, { type: 'flag', target: 'found_old_letter' }], require: { hasIdentity: 'vampire' } },
-      ],
-    },
-    {
-      id: 'e_admission', kind: 'fixed', season: 'school', title: '大学录取',
-      narrative: '三年走到这里。桌上的录取通知书摊开，窗外是和你第一次开学那天一样的秋风。',
-      choices: [
-        { id: 'c1', text: '按原计划去远方', effects: [{ type: 'flag', target: 'leave_far' }] },
-        { id: 'c2', text: '留在青川', effects: [{ type: 'flag', target: 'stay_qingchuan' }] },
+        { id: 'c1', text: '认真答题', effects: [] },
+        { id: 'c2', text: '答完提早交卷', effects: [] },
       ],
     },
   ],
 
   outcomes: [
     {
-      id: 'o_truth', title: '【真相】读档人',
-      narrative: '你想起了所有轮回。这一次，你不再是被读的剧本，而是读的人。',
-      require: { all: [{ flag: 'opened_door' }, { goalProgressAtLeast: ['g_truth', 4] }] },
-      minGoalRatio: 0.8,
+      id: 'o_default', title: '【暂时】学期未完',
+      narrative: '这段时间结束。',
+      minGoalRatio: 0,
     },
-    { id: 'o_friend', title: '【羁绊】不再孤单', narrative: '三年里你有了一个愿意一起重来的人，轮回也不再那么可怕。', minGoalRatio: 0.8 },
-    { id: 'o_normal', title: '【平淡】毕业', narrative: '你走完了三年，风平浪静，有些东西永远留在了旧楼里。', minGoalRatio: 0 },
   ],
 
-  conflicts,
-  conflictLinks,
-  conflictEventLinks,
-  conflictNpcEffects,
   factorPool,
   factorGroups,
-  clues,
+  interactEvents: [],   // 骨架阶段：空池，引擎能跑但不出事件
 }

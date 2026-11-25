@@ -1,17 +1,15 @@
-// 条件求值与效果作用：纯函数，不依赖 React/DOM，便于单测与将来复用到服务端。
-// v4：EvalContext 增加 activeFactors（已激活因子集合），支持 factorActive 条件。
-//     因子演化不属于单个 Effect，由 factorEvolve.ts 负责，这里不处理。
+// 条件求值与效果作用（v5）
+// 相对 v4 的变更：EvalContext 增加 identityFactor（seal/ancient），支持 identityFactorIs 条件。
 
-import type { Condition, Effect } from '../script/types'
+import type { Condition, Effect, IdentityFactorId } from '../script/types'
 
-/** 求值所需的最小上下文 */
 export interface EvalContext {
   identityTags: Set<string>
+  identityFactor: IdentityFactorId
   affinity: Record<string, number>
   flags: Set<string>
   goalProgress: Record<string, number>
   month: number
-  /** 已激活因子集合 */
   activeFactors: ReadonlySet<string>
 }
 
@@ -20,6 +18,7 @@ export function evalCondition(cond: Condition | undefined, ctx: EvalContext): bo
   if ('all' in cond) return cond.all.every((c) => evalCondition(c, ctx))
   if ('any' in cond) return cond.any.some((c) => evalCondition(c, ctx))
   if ('hasIdentity' in cond) return ctx.identityTags.has(cond.hasIdentity)
+  if ('identityFactorIs' in cond) return ctx.identityFactor === cond.identityFactorIs
   if ('affinityAtLeast' in cond) {
     const [npc, v] = cond.affinityAtLeast
     return (ctx.affinity[npc] ?? 0) >= v
@@ -31,11 +30,10 @@ export function evalCondition(cond: Condition | undefined, ctx: EvalContext): bo
   }
   if ('monthAtLeast' in cond) return ctx.month >= cond.monthAtLeast
   if ('factorActive' in cond) return ctx.activeFactors.has(cond.factorActive)
-  // custom 逃生口：未注册的子类型默认不满足，避免误放行
   return false
 }
 
-/** 应用效果，直接修改传入的 ctx（调用方持有可变副本）。返回日志文本数组。 */
+/** 应用效果；不处理面向交互树的定制逻辑。返回日志文本数组。 */
 export function applyEffects(effects: Effect[], ctx: EvalContext): string[] {
   const logs: string[] = []
   for (const e of effects) {
@@ -55,7 +53,7 @@ export function applyEffects(effects: Effect[], ctx: EvalContext): string[] {
       case 'log':
         logs.push(e.text)
         break
-      // effect.type === 'custom' 目前无注册处理器，忽略
+      // setTerminate 由上层拦截（本批不使用）
       default:
         break
     }
