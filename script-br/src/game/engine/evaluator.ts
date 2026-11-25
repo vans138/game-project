@@ -1,21 +1,24 @@
-// 条件求值与效果作用：纯函数，不依赖 React/DOM，便于单测与将来复用到服务端。
-import type { Condition, Effect } from '../script/types'
+// 条件求值与效果作用（v6）
+// EvalContext 增加 identityFactor，支持 identityFactorIs 条件。
 
-/** 求值所需的最小上下文（从 RunState 中玩家与全局抽取） */
+import type { Condition, Effect, IdentityFactorId } from '../script/types'
+
 export interface EvalContext {
   identityTags: Set<string>
+  identityFactor: IdentityFactorId
   affinity: Record<string, number>
   flags: Set<string>
   goalProgress: Record<string, number>
   month: number
+  activeFactors: ReadonlySet<string>
 }
 
-/** 判断条件是否满足 */
 export function evalCondition(cond: Condition | undefined, ctx: EvalContext): boolean {
   if (!cond) return true
   if ('all' in cond) return cond.all.every((c) => evalCondition(c, ctx))
   if ('any' in cond) return cond.any.some((c) => evalCondition(c, ctx))
   if ('hasIdentity' in cond) return ctx.identityTags.has(cond.hasIdentity)
+  if ('identityFactorIs' in cond) return ctx.identityFactor === cond.identityFactorIs
   if ('affinityAtLeast' in cond) {
     const [npc, v] = cond.affinityAtLeast
     return (ctx.affinity[npc] ?? 0) >= v
@@ -26,10 +29,10 @@ export function evalCondition(cond: Condition | undefined, ctx: EvalContext): bo
     return (ctx.goalProgress[goal] ?? 0) >= v
   }
   if ('monthAtLeast' in cond) return ctx.month >= cond.monthAtLeast
-  return true
+  if ('factorActive' in cond) return ctx.activeFactors.has(cond.factorActive)
+  return false
 }
 
-/** 应用效果，注意这里直接修改传入的 ctx（调用方持有可变副本） */
 export function applyEffects(effects: Effect[], ctx: EvalContext): string[] {
   const logs: string[] = []
   for (const e of effects) {
@@ -48,6 +51,8 @@ export function applyEffects(effects: Effect[], ctx: EvalContext): string[] {
         break
       case 'log':
         logs.push(e.text)
+        break
+      default:
         break
     }
   }

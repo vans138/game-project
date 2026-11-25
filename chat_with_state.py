@@ -113,6 +113,7 @@ FEED_FILES = [
     "code/src/engine.ts",
 ]
 FEED_MAX_CHARS = 120_000
+SYNC_KEYWORDS = {"/sync", "同步", "刷新"}
 # ---------- System Prompt ----------
 SYSTEM_PROMPT = """你是一位资深独立游戏设计师兼全栈游戏工程师，有 10 年经验。
 
@@ -260,7 +261,7 @@ if not os.path.exists(STATE_FILE):
 
 print("=== 游戏设计协作（自动 git push）===")
 print(f"项目目录: {BASE_DIR}")
-print("命令: /push 手动推送  /status 看状态  /reset 清空上下文  exit 退出\n")
+print("命令: /push 手动推送  /status 看状态  /reset 清空上下文  /sync 同步文件  exit 退出\n")
 
 while True:
     q = input("\n你: ").strip()
@@ -278,6 +279,14 @@ while True:
     if q == "/reset":
         history = build_history()
         print("  [已重置上下文]")
+        continue
+    if q in SYNC_KEYWORDS:
+        new_sys = build_history()[0]
+        if history and history[0]["role"] == "system":
+            history[0] = new_sys
+        else:
+            history.insert(0, new_sys)
+        print("  [已同步：system prompt 已刷新为当前文件]")
         continue
     if not q:
         continue
