@@ -1,4 +1,7 @@
-// 第一份剧本（v6.1）：青川中学 · Y1 上学期 + 寒假（Y1-9 ~ Y2-2）
+// 第一份剧本（v6.2）：青川中学 · Y1 上学期 + 寒假（Y1-9 ~ Y2-2）
+// 相对 v6.1 的变更：
+//   - it_latenight 的 requires 由 hasCrush:false 改为 hasCrush:true（语义正确）
+//   - 现在 crush 未接入，pickInteract 会过滤掉它（预期行为，本批看不到它）
 
 import type {
   Script,
@@ -168,8 +171,13 @@ const interactEvents: InteractEvent[] = [
       ],
     },
   },
+
+  // it_latenight：保留完整的 maybeLong 形态。
+  // requires.hasCrush = true → 本批（无 crush）会被 pickInteract 过滤掉，预期。
+  // 下一批接入 crush 后，玩家选定「在意的人」时，它会自动进入池子。
   {
     id: 'it_latenight', kind: 'maybeLong', weight: 4,
+    requires: { hasCrush: true },
     root: {
       text: '某天你学得入了迷，很晚才走。教室里只剩你一个人，走廊的灯也已经关了大半。\n窗外黑着，只有对面楼还隐约亮着一格。',
       choices: [
@@ -184,6 +192,7 @@ const interactEvents: InteractEvent[] = [
       ],
     },
   },
+
   {
     id: 'it_rooftop', kind: 'short', weight: 2,
     root: {
@@ -194,6 +203,7 @@ const interactEvents: InteractEvent[] = [
       ],
     },
   },
+
   {
     id: 'it_oldfloor', kind: 'maybeLong', weight: 2,
     root: {
