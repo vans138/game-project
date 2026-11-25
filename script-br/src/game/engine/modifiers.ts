@@ -1,32 +1,95 @@
-// 概率调制（v8）
+// 概率调制内核（v9）
 //
-// 把"状态 → 加成倍数"集中到一处，避免在抽取逻辑里写 if
-// 目前包含：
-//   - 龙迫：目标本月行动失效；有利权重 ×0.5、不利权重 ×1.5；
+// 统一模型：
+//   - 事件：三档分量 = EVENT_TIER_BASE + 各来源加成（累加）
+//   - 结果：两侧分量 = RESULT_SIDE_BASE + 各来源加成（累加）
+//   然后各自归一化为"占比"，按占比抽。
+//
+// 本文件提供"分量"的聚合与归一化，不负责具体抽取（抽取在 RunEngine）。
 
-import type { Valence } from '../script/types'
+import type { EventTier } from '../script/types'
+import { EVENT_TIER_BASE, RESULT_SIDE_BASE, MODIFIER } from './balance'
 
 /** 单次抽取时的调制来源（来自目标身上当前挂着的状态） */
 export interface ModifierSource {
-  /** 本月是否被龙迫过（被龙迫 → 有利↓不利↑） */
   dragonCoercedThisMonth: boolean
 }
 
-export const FAVORABLE_MULT_COERCED = 0.5
-export const UNFAVORABLE_MULT_COERCED = 1.5
+/** 事件档位分量表 */
+export type TierWeights = Record<EventTier, number>
 
-/** 把 valence 按状态调制，返回新的 valence（不修改原对象） */
-export function modulateValence(v: Valence, src: ModifierSource): Valence {
-  if (!src.dragonCoercedThisMonth) return v
+/** 结果两侧分量表 */
+export interface SideWeights {
+  favorable: number
+  unfavorable: number
+}
+
+/** 事件档位的初始分量（拷贝基准，避免污染常量） */
+export function baseTierWeights(): TierWeights {
+  return { ...EVENT_TIER_BASE }
+}
+
+/** 结果两侧初始分量 */
+export function baseSideWeights(): SideWeights {
+  return { ...RESULT_SIDE_BASE }
+}
+
+/**
+ * 叠加一个来源对"事件档位"的加成（分量层 +百分点）。
+ * 返回新对象，不修改入参。
+ */
+export function applyTierModifier(weights: TierWeights, src: ModifierSource): TierWeights {
+  if (!src.dragonCoercedThisMonth) return weights
   return {
-    favorable: (v.favorable ?? 0) * FAVORABLE_MULT_COERCED,
-    unfavorable: (v.unfavorable ?? 0) * UNFAVORABLE_MULT_COERCED,
-    neutral: v.neutral,
+    common: weights.common + MODIFIER.dragonCoerceTier.common,
+    rare: weights.rare + MODIFIER.dragonCoerceTier.rare,
+    critical: weights.critical + MODIFIER.dragonCoerceTier.critical,
   }
 }
 
-/** 从 valence 计算"抽取权重"（取各项之和，如果都没设默认 1） */
-export function valenceWeight(v: Valence): number {
-  const sum = (v.favorable ?? 0) + (v.unfavorable ?? 0) + (v.neutral ?? 0)
-  return sum > 0 ? sum : 1
+/** 叠加一个来源对"结果两侧"的加成 */
+export function applySideModifier(weights: SideWeights, src: ModifierSource): SideWeights {
+  if (!src.dragonCoercedThisMonth) return weights
+  return {
+    favorable: weights.favorable + MODIFIER.dragonCoerceSide.favorable,
+    unfavorable: weights.unfavorable + MODIFIER.dragonCoerceSide.unfavorable,
+  }
+}
+
+/** 归一化为占比；总和 <= 0 时退化为均匀 */
+export function normalizeTier(weights: TierWeights): TierWeights {
+  const sum = weights.common + weights.rare + weights.critical
+  if (sum <= 0) return { common: 1 / 3, rare: 1 / 3, critical: 1 / 3 }
+  return {
+    common: weights.common / sum,
+    rare: weights.rare / sum,
+    critical: weights.critical / sum,
+  }
+}
+
+export function normalizeSide(weights: SideWeights): SideWeights {
+  const sum = weights.favorable + weights.unfavorable
+  if (sum <= 0) return { favorable: 0.5, unfavorable: 0.5 }
+  return {
+    favorable: weights.favorable / sum,
+    unfavorable: weights.unfavorable / sum,
+  }
+}
+
+/**
+ * 从归一化后的三档里抽一档。
+ * 按 common → rare → critical 顺序累计，取第一个累计值 > roll 的档。
+ * weights 已经是占比（和=1）。
+ */
+export function pickTier(norm: TierWeights, roll: number): EventTier {
+  if (roll < norm.common) return 'common'
+  if (roll < norm.common + norm.rare) return 'rare'
+  return 'critical'
+}
+
+/**
+ * 从归一化的两侧里抽一侧。
+ */
+export function pickSide(norm: SideWeights, roll: number): 'favorable' | 'unfavorable' {
+  return roll < norm.favorable ? 'favorable' : 'unfavorable'
 }
