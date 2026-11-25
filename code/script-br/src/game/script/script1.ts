@@ -1,11 +1,10 @@
 // 第一份剧本：青川中学 · 三年（9月入学 → 三年后9月大学录取）
 // 单玩家，11 个 NPC（8 常驻 + 3 随机）。
 //
-// 本版重点：
-//   1) 补齐剧本根的新必填字段：conflicts / conflictLinks / conflictEventLinks / conflictNpcEffects；
-//   2) 事件全部标 season（school / holiday / both），引擎按当前月 type 过滤随机池；
-//   3) 时间轴重写：一年9月 → 三年9月，含寒假/暑假分段，最后一格是「录取结局月」；
-//   4) 上学月固定 stepCount=2，假期月 stepCount=3（线索调查可动态覆盖，先给默认）。
+// 本版重点（v4）：
+//   1) 因子层对齐「互斥组」模型：factorPool 只留 id/title，factorGroups 配组与概率；
+//   2) 「因子未来」组 id 约定为 "<原因子id>::future"，special='future'；
+//   3) 其余数据（矛盾 / 关系边 / 冲突事件源 / NPC 影响 / 事件 season / 时间轴）沿用 v3。
 
 import type {
   Script,
@@ -14,10 +13,11 @@ import type {
   ConflictLink,
   ConflictEventLink,
   ConflictNpcEffect,
+  FactorDef,
+  FactorGroup,
 } from './types'
 
 // ---------- 矛盾点（核心插座） ----------
-// 只放最小 + 最稳的字段；诉求 / 解决方式 / 张力 / 迷雾 一律进 data。
 const conflicts: Conflict[] = [
   {
     id: 'c_parents',
@@ -25,7 +25,6 @@ const conflicts: Conflict[] = [
     parties: ['家族', 'npc_lin'],
     tags: ['family', 'vampire', 'spirit'],
     data: {
-      // 语义全部塞进 data，结构不动
       demandA: '希望孩子留在家族',
       demandB: '希望孩子远离家族',
       solvePaths: ['调解', '选边', '隐瞒'],
@@ -50,9 +49,7 @@ const conflicts: Conflict[] = [
 
 // ---------- 矛盾 ↔ 矛盾 关系边 ----------
 const conflictLinks: ConflictLink[] = [
-  // 争同一稀缺物（家族资源/成绩名额） —— 互斥类张力
   { from: 'c_parents', to: 'c_top_rank', kind: 'mutex', data: { note: '家族把你往学业上推' } },
-  // 旧楼门后线索会揭穿父母秘密 —— 依赖类（真相关联）
   { from: 'c_old_door', to: 'c_parents', kind: 'reveals', data: { note: '门后揭示家族旧事' } },
 ]
 
@@ -68,9 +65,7 @@ const conflictEventLinks: ConflictEventLink[] = [
 
 // ---------- 矛盾 ↔ NPC 影响（动态，取满足条件的第一条） ----------
 const conflictNpcEffects: ConflictNpcEffect[] = [
-  // 父母不合：默认让林老师（代表家长方）对你更严肃
   { conflictId: 'c_parents', npcId: 'npc_lin', value: -3, reversible: true },
-  // 若已开门（真相推进），何老师转为同情
   {
     conflictId: 'c_old_door',
     npcId: 'npc_he',
@@ -78,14 +73,91 @@ const conflictNpcEffects: ConflictNpcEffect[] = [
     reversible: true,
     require: { flag: 'opened_door' },
   },
-  // 旧楼默认：顾伯对夜探者更亲近
   { conflictId: 'c_old_door', npcId: 'npc_gu', value: 4, reversible: true },
+]
+
+// ---------- 因子池（极简：只有身份信息） ----------
+// 大因子/小因子仅靠命名与语义规范，此处不再有 tier 字段。
+const factorPool: FactorDef[] = [
+  // 家族线
+  { id: 'f_family',      title: '家族裂痕' },
+  // 旧楼线
+  { id: 'f_oldfloor',    title: '旧楼低语' },
+  // 学业线
+  { id: 'f_rivalry',     title: '学业竞争' },
+  // 小因子（局部摆动）
+  { id: 'f_new_seatmate', title: '换了同桌' },
+  { id: 'f_rainy_week',   title: '连绵阴雨' },
+  // 未来因子（作为"因子未来"组的落点）
+  { id: 'f_family_reconciled', title: '家族和解' },
+  { id: 'f_family_broken',     title: '家族决裂' },
+  { id: 'f_door_open',         title: '门被打开' },
+  { id: 'f_door_sealed',       title: '门被封死' },
+]
+
+// ---------- 因子互斥组 ----------
+// 约定：
+//   普通组：组内按 chance 独立互斥选取（剩余概率 = 都不选）
+//   未来组：special='future'，id 约定 "<原因子id>::future"
+//           * 一定触发
+//           * 视为该因子本轮最后一次触发
+//           * 触发后原因子 off（由引擎在演化后处理）
+// 组与组之间的触发顺序/条件由配置层人工约定（引擎按"当前激活因子"筛出参与的组）。
+
+const factorGroups: FactorGroup[] = [
+  // ---- 开局主基调组：大因子互斥选取 ----
+  // 家族裂痕 45% / 旧楼低语 35% / 学业竞争 20%（之和 1.0）
+  {
+    id: 'grp_opening_theme',
+    data: { note: '开局主基调，三选一' },
+    members: [
+      { factorId: 'f_family',   chance: 0.45 },
+      { factorId: 'f_oldfloor', chance: 0.35 },
+      { factorId: 'f_rivalry',  chance: 0.2 },
+    ],
+  },
+
+  // ---- 小因子组（非互斥独立触发：把它们拆成两个"单选组"也行，这里保留为单组独立）----
+  // 换同桌 60%，否则不变（剩余 40% = 都不选）
+  {
+    id: 'grp_small_seatmate',
+    members: [{ factorId: 'f_new_seatmate', chance: 0.6 }],
+  },
+  // 阴雨周 30%
+  {
+    id: 'grp_small_rain',
+    members: [{ factorId: 'f_rainy_week', chance: 0.3 }],
+  },
+
+  // ---- 家族线的未来：由 f_family 驱动 ----
+  // 命中后原因子 f_family 关闭；二选一（和解 60% / 决裂 40%）
+  {
+    id: 'f_family::future',
+    special: 'future',
+    data: { ownerFactorId: 'f_family' },
+    members: [
+      { factorId: 'f_family_reconciled', chance: 0.6 },
+      { factorId: 'f_family_broken',     chance: 0.4 },
+    ],
+  },
+
+  // ---- 旧楼线的未来：由 f_oldfloor 驱动 ----
+  // 命中后原因子 f_oldfloor 关闭；打开 50% / 封死 50%
+  {
+    id: 'f_oldfloor::future',
+    special: 'future',
+    data: { ownerFactorId: 'f_oldfloor' },
+    members: [
+      { factorId: 'f_door_open',   chance: 0.5 },
+      { factorId: 'f_door_sealed', chance: 0.5 },
+    ],
+  },
 ]
 
 // ---------- 时间轴 ----------
 // 学年结构：9月开学 → 次年8月学年结束（约 12 个月）。
 // 假期：寒假 ≈ 1、2 月；暑假 ≈ 7、8 月（按月为整体标签）。
-// 最后一格：三年 9 月 = 大学录取 / 结局月（type 仍算 school，但会作为收尾月处理）。
+// 最后一格：三年 9 月 = 大学录取 / 结局月。
 
 function buildTimeline(): MonthDef[] {
   const targetMonths: { year: number; month: number }[] = []
@@ -94,7 +166,6 @@ function buildTimeline(): MonthDef[] {
 
   for (const y of years) {
     for (const m of order) {
-      // 三年 8 月之后，只补一格「三年 9 月」作为结局月
       targetMonths.push({ year: y, month: m })
     }
   }
@@ -114,13 +185,11 @@ function buildTimeline(): MonthDef[] {
       silentStudy: type === 'school',
     }
 
-    // 固定锚点
     if (year === 1 && month === 9) def.fixedEvent = 'e_open'
     if (year === 1 && month === 11) def.fixedEvent = 'e_midterm'
     if (year === 3 && month === 9) def.fixedEvent = 'e_admission'
-    if (year !== 1 && month === 9) def.fixedEvent = 'e_open' // 每学年开头复用开学
+    if (year !== 1 && month === 9) def.fixedEvent = 'e_open'
 
-    // 随机池（假期只抽 holiday/both，上学只抽 school/both —— 具体过滤在引擎做）
     if (!def.fixedEvent) {
       if (type === 'school') def.randomPool = ['e_club', 'e_night', 'e_study', 'e_sports', 'e_midterm']
       else def.randomPool = ['e_night', 'e_holiday_family', 'e_sports']
@@ -250,7 +319,6 @@ export const SCRIPT_1: Script = {
       ],
     },
     {
-      // 假期主打事件：家族线 —— 身份在此完整显现
       id: 'e_holiday_family',
       kind: 'random',
       season: 'holiday',
@@ -264,7 +332,6 @@ export const SCRIPT_1: Script = {
       ],
     },
     {
-      // 录取结局月：只给"走向"选择，实际结局在引擎按 outcomes 判
       id: 'e_admission',
       kind: 'fixed',
       season: 'school',
@@ -303,4 +370,6 @@ export const SCRIPT_1: Script = {
   conflictLinks,
   conflictEventLinks,
   conflictNpcEffects,
+  factorPool,
+  factorGroups,
 }
