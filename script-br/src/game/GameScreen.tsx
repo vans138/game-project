@@ -1,4 +1,5 @@
-// UI：背景 + 月数 + 选项 + 下方文本框；右侧一个可开关的好感面板。
+// UI：背景 + 月/阶段 + 选项 + 下方文本框 + 右上关系面板
+
 import { useEffect, useRef, useState } from 'react'
 import type { GameSource, GameView } from './GameView'
 import './styles.css'
@@ -25,9 +26,7 @@ export default function GameScreen({ source }: { source: GameSource }) {
       )}
       {showPanel && (
         <div className="g-panel">
-          <div className="g-panel-head">
-            好感 {view.affinityTotal}/{view.affinityCap}
-          </div>
+          <div className="g-panel-head">好感 {view.affinityTotal}/{view.affinityCap}</div>
           {view.affinity.length === 0 && <div className="g-panel-empty">暂无</div>}
           {view.affinity.map((a) => (
             <div key={a.name} className="g-panel-row">
@@ -38,7 +37,13 @@ export default function GameScreen({ source }: { source: GameSource }) {
       )}
 
       <div className="g-middle">
-        {view.month > 0 && <div className="g-month" aria-label="回合数">{view.month}</div>}
+        {view.month > 0 && (
+          <div className="g-month" aria-label="回合数">{view.month}</div>
+        )}
+
+        {view.phaseHint && view.month > 0 && (
+          <div className="g-phase">{view.phaseHint}{view.isEventMonth ? ' · 事件月' : ''}</div>
+        )}
 
         {view.finished && (
           <div className="g-outcome">
@@ -51,7 +56,7 @@ export default function GameScreen({ source }: { source: GameSource }) {
             <button key={c.id} className="g-choice" onClick={() => onChoose(c.id)}>{c.text}</button>
           ))}
           {showAdvance && (
-            <button className="g-choice" onClick={() => onChoose('__advance__')}>推进到下一月</button>
+            <button className="g-choice" onClick={() => onChoose('__advance__')}>推进</button>
           )}
         </div>
       </div>

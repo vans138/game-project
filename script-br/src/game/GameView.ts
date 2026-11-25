@@ -1,4 +1,4 @@
-// GameView：UI 只读快照。新增好感面板字段。
+// GameView：UI 只读快照（v5）
 
 export interface GameChoice {
   id: string
@@ -10,20 +10,36 @@ export interface AffinityItem {
   value: number
 }
 
+export type GamePhase =
+  | 'intro'
+  | 'mainChoice'
+  | 'feedback'
+  | 'smallEvent'
+  | 'fixedEvent'
+  | 'interact1'
+  | 'interact2'
+  | 'summary'
+  | 'holidaySkip'
+  | 'done'
+
 export interface GameView {
   month: number
+  year: number
+  monthOfYear: number
+  monthType: 'school' | 'holiday'
+  phase: GamePhase
+  phaseHint: string
   background: string
   narrative: string
   choices: GameChoice[]
   finished: boolean
   outcomeTitle?: string
   outcomeNarrative?: string
-  /** 好感面板（已按值降序，0 值过滤） */
   affinity: AffinityItem[]
-  /** 好感总投入（正向和） */
   affinityTotal: number
-  /** 好感总封顶 */
   affinityCap: number
+  identityName: string
+  isEventMonth: boolean
 }
 
 export interface GameSource {

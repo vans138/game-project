@@ -1,14 +1,15 @@
-// GameSource 单机实现：选角 → 启动 RunEngine → 转 GameView。
-// 本轮把好感面板数据透传给 UI。
+// GameSource 单机实现（v5）：开局选玄幻身份 → 引擎随机确定身份因子 → 转 GameView
 
 import type { GameSource, GameView } from './GameView'
 import { SCRIPT_1 } from './script/script1'
 import { RunEngine, type Snapshot } from './engine/RunEngine'
-import type { Role } from './script/types'
 
 const PLACEHOLDER_BG = 'linear-gradient(160deg, #1f2a44 0%, #33507a 50%, #6a8bbf 100%)'
 
-function backgroundFor(year: number, month: number): string {
+function backgroundFor(year: number, type: 'school' | 'holiday'): string {
+  if (type === 'holiday') {
+    return 'linear-gradient(160deg, #2e2640 0%, #4a3c5e 55%, #8a7ba0 100%)'
+  }
   const palettes: Record<number, string> = {
     1: 'linear-gradient(160deg, #24324f 0%, #3c5a86 60%, #7aa0cf 100%)',
     2: 'linear-gradient(160deg, #3a2a44 0%, #6a4a6e 55%, #b98ec2 100%)',
@@ -24,7 +25,12 @@ function npcName(id: string): string {
 function toView(s: Snapshot): GameView {
   return {
     month: s.monthIndex,
-    background: backgroundFor(s.year, s.month),
+    year: s.year,
+    monthOfYear: s.month,
+    monthType: s.monthType,
+    phase: s.phase,
+    phaseHint: s.phaseHint,
+    background: backgroundFor(s.year, s.monthType),
     narrative: s.narrative,
     choices: s.choices.map((c) => ({ id: c.id, text: c.text })),
     finished: s.finished,
@@ -35,6 +41,8 @@ function toView(s: Snapshot): GameView {
       .map((p) => ({ name: npcName(p.id), value: p.value })),
     affinityTotal: s.affinityTotal,
     affinityCap: s.affinityCap,
+    identityName: s.identityName,
+    isEventMonth: s.isEventMonth,
   }
 }
 
@@ -43,8 +51,8 @@ export function createLocalSource(): GameSource {
   let lastSnap: Snapshot | null = null
   const listeners = new Set<(view: GameView) => void>()
 
-  function startWithRole(role: Role) {
-    engine = new RunEngine(SCRIPT_1, role)
+  function startWithIdentity(identityId: string) {
+    engine = new RunEngine(SCRIPT_1, identityId)
     lastSnap = engine.snapshot()
     engine.subscribe((s) => {
       lastSnap = s
@@ -55,38 +63,46 @@ export function createLocalSource(): GameSource {
     listeners.forEach((fn) => fn(view))
   }
 
-  function rosterView(): GameView {
+  function identityView(): GameView {
+    const first = SCRIPT_1.identities[0]
     return {
       month: 0,
+      year: 0,
+      monthOfYear: 0,
+      monthType: 'school',
+      phase: 'intro',
+      phaseHint: '',
       background: PLACEHOLDER_BG,
       narrative:
-        '【轮回校园 · 选择你的身份】\n\n' +
-        SCRIPT_1.roles.map((r) => `· ${r.name}｜表面任务：${r.surfaceTask}`).join('\n') +
-        `\n\n校园里有 ${SCRIPT_1.npcs.length} 个人会与你相遇。选定后，你将带着一种"身份"走进这三年。`,
-      choices: SCRIPT_1.roles.map((r) => ({ id: `role:${r.id}`, text: r.name })),
+        '【轮回校园 · 选择你的玄幻身份】\n\n' +
+        SCRIPT_1.identities.map((x) => `· ${x.name}\n  ${x.desc}`).join('\n\n') +
+        '\n\n选定后，你会带着一种身份走进这三年。',
+      choices: SCRIPT_1.identities.map((x) => ({ id: `identity:${x.id}`, text: x.name })),
       finished: false,
       affinity: [],
       affinityTotal: 0,
       affinityCap: SCRIPT_1.affinityCap,
+      identityName: first?.name ?? '',
+      isEventMonth: false,
     }
   }
 
   return {
     getView() {
-      if (!engine) return rosterView()
+      if (!engine) return identityView()
       return toView(lastSnap ?? engine.snapshot())
     },
     choose(choiceId: string) {
       if (!engine) {
-        if (choiceId.startsWith('role:')) {
-          const roleId = choiceId.slice('role:'.length)
-          const role = SCRIPT_1.roles.find((r) => r.id === roleId)
-          if (role) {
-            startWithRole(role)
-            return lastSnap ? toView(lastSnap) : rosterView()
+        if (choiceId.startsWith('identity:')) {
+          const identityId = choiceId.slice('identity:'.length)
+          const found = SCRIPT_1.identities.find((x) => x.id === identityId)
+          if (found) {
+            startWithIdentity(found.id)
+            return lastSnap ? toView(lastSnap) : identityView()
           }
         }
-        return rosterView()
+        return identityView()
       }
       const snap = engine.choose(choiceId)
       lastSnap = snap
