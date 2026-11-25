@@ -10,12 +10,14 @@ GDD_FILE = os.path.join(BASE_DIR, "GDD.md")
 TECH_FILE = os.path.join(BASE_DIR, "tech_spec.md")
 CODE_DIR = os.path.join(BASE_DIR, "code")
 GITIGNORE = os.path.join(BASE_DIR, ".gitignore")
+PENDING_DIR = os.path.join(BASE_DIR, ".pending")
 
 if not API_KEY:
     print("请先设置 DEEPSEEK_API_KEY")
     exit(1)
 
 os.makedirs(CODE_DIR, exist_ok=True)
+os.makedirs(PENDING_DIR, exist_ok=True)
 
 
 # ---------- git 相关 ----------
@@ -34,7 +36,7 @@ def git_commit_push(message):
         return
     ok, status = git_run(["status", "--porcelain"])
     if not status:
-        return  # 没改动
+        return
     ok, out = git_run(["commit", "-m", message])
     if not ok:
         print("  [git] commit 失败:", out)
@@ -47,9 +49,18 @@ def git_commit_push(message):
 
 
 def ensure_gitignore():
-    if not os.path.exists(GITIGNORE):
+    lines = []
+    if os.path.exists(GITIGNORE):
+        lines = open(GITIGNORE, encoding="utf-8").read().splitlines()
+    need = ["__pycache__/", "*.pyc", ".env", "*.log", ".venv/", ".pending/"]
+    changed = False
+    for n in need:
+        if n not in lines:
+            lines.append(n)
+            changed = True
+    if changed:
         with open(GITIGNORE, "w", encoding="utf-8") as f:
-            f.write("__pycache__/\n*.pyc\n.env\n*.log\n.venv/\n")
+            f.write("\n".join(lines) + "\n")
 
 
 # ---------- 文件读写 ----------
@@ -65,9 +76,16 @@ def save_file(path, content):
     print(f"  [已保存] {os.path.relpath(path, BASE_DIR)}")
 
 
+def dump_pending(path, content, reason):
+    """疑似截断：转存到 .pending/ 下，文件名带上时间戳，避免覆盖。"""
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe = path.replace("/", "__").replace("\\", "__")
+    dest = os.path.join(PENDING_DIR, f"{ts}__{safe}")
+    open(dest, "w", encoding="utf-8").write(content)
+    print(f"  [转存] {path} → .pending/{os.path.basename(dest)}（原因：{reason}）")
+
+
 # ---------- SAVE 块解析 ----------
-# 只匹配“独占一行”的标记：^...$ + MULTILINE
-# 路径只允许 ASCII 安全字符，杜绝中文/省略号/反引号/空格导致的 WinError 123
 SAVE_RE = re.compile(
     r'^<<<SAVE:([A-Za-z0-9_./\-]+)>>>[ \t]*\r?\n'
     r'(.*?)'
@@ -75,49 +93,82 @@ SAVE_RE = re.compile(
     re.MULTILINE | re.DOTALL
 )
 
+# 结尾看起来"没写完"的字符（对代码文件的粗略哨兵）
+BAD_TAIL = ("+", "=", ":", "(", "{", "[", ",", "=>", "&&", "||", "?")
+
+
+def looks_truncated(path, body):
+    """粗略判断内容是否疑似被截断。
+    只作为"可疑就拒写"的筛子；宁可误报（重发一次）也绝不写坏现网文件。"""
+    if not body.strip():
+        return "内容为空"
+
+    last = body.rstrip().splitlines()[-1].rstrip()
+    for bad in BAD_TAIL:
+        if last.endswith(bad):
+            return f"末行以 {bad!r} 结尾"
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".ts", ".tsx", ".js", ".jsx", ".py", ".json"):
+        # 括号粗配平（可能被字符串干扰，仅作可疑判断）
+        for op, cl in (("(", ")"), ("{", "}"), ("[", "]")):
+            if body.count(op) != body.count(cl):
+                return f"括号不配平 {op} vs {cl}（{body.count(op)}≠{body.count(cl)}）"
+        # 反引号奇偶（模板字符串）
+        if ext in (".ts", ".tsx", ".js", ".jsx"):
+            if body.count("`") % 2 != 0:
+                return "反引号数量为奇数（模板字符串未闭合）"
+        # 单双引号不配对常见于中文字符串里混入的引号，很不可靠，不做。
+    return None
+
 
 def extract_saves(text):
-    saves = []
-    for m in SAVE_RE.finditer(text):
-        path = m.group(1).strip()
-        content = m.group(2)
-        # 兜底校验：非空、无目录穿越
-        if not path or '..' in path:
-            continue
-        saves.append((path, content))
+    """
+    fail-safe 落盘：
+      1. 同一路径在本次回复里出现多次 → 合并为最后一次（记录警告）
+      2. 写盘前用 looks_truncated 做哨兵；疑似截断 → 拒绝写、转存 .pending/
+      3. 通过校验的才整份覆盖现网文件
+    """
+    saves = list(SAVE_RE.findall(text))
 
-    # 先全部校验完，再统一写盘 + push，避免写一半炸掉
-    written = []
+    by_path = {}
+    duplicate = set()
     for path, content in saves:
+        path = path.strip()
+        if not path or ".." in path:
+            continue
+        if path in by_path:
+            duplicate.add(path)
+        by_path[path] = content.strip()
+
+    written, rejected = [], []
+    for path, body in by_path.items():
+        reason = looks_truncated(path, body)
+        if reason:
+            dump_pending(path, body, reason)
+            rejected.append((path, reason))
+            continue
         full = os.path.join(BASE_DIR, path)
-        save_file(full, content.strip())
+        save_file(full, body)
         written.append(path)
 
     if written:
         git_commit_push("AI: 更新 " + ", ".join(written))
 
+    if duplicate:
+        print(f"  [提示] 本轮同一路径出现多次：{', '.join(sorted(duplicate))}")
+    if rejected:
+        print("\n  ❌ 以下文件因疑似截断被拒绝写入（内容已转存 .pending/）：")
+        for p, r in rejected:
+            print(f"     - {p}（{r}）")
+        print("     请让模型重发这些文件，或从 .pending/ 手动取用。")
+
     clean = SAVE_RE.sub("", text).strip()
     return clean, saves
 
-# 读的范围 = BASE_DIR 整个项目（与 SAVE 可写范围一致）
-AUTO_SCAN_DIRS = ["."]
-SCAN_EXTS = (".ts", ".tsx", ".js", ".jsx", ".css", ".json", ".md", ".html", ".py")
-SCAN_SKIP_DIRS = {
-    "node_modules", "dist", "build", ".git", "__pycache__",
-    ".venv", "venv", "out", ".next", "coverage",
-}
 
-FEED_FILES = [
-    "code/src/game/types.ts",
-    "code/src/game/script.campus.ts",
-    "code/src/engine.ts",
-]
-FEED_MAX_CHARS = 120_000
-SYNC_KEYWORDS = {"/sync", "同步", "刷新"}
 # ---------- System Prompt ----------
 SYSTEM_PROMPT = """你是一位资深独立游戏设计师兼全栈游戏工程师，有 10 年经验。
-
-
 
 【工作方式】严格分阶段，不要跳步：
 阶段1 设计沟通：了解雏形（核心玩法/平台/美术/规模），每次最多问3个问题，打磨核心循环与MVP，输出《GDD》，我确认后进入下一阶段。
@@ -134,14 +185,27 @@ SYSTEM_PROMPT = """你是一位资深独立游戏设计师兼全栈游戏工程�
 【原则】不确定就问；MVP优先；代码要能直接跑；中文沟通。
 
 【续写约定（重要）】
-- 如果你预判本轮回复太长、可能写不完全部内容，请在「一个完整的文件块」结束后（<<<END>>> 之后的新行）另起一行写 <<<MORE>>>
-- <<<MORE>>> 必须独占一行。系统检测到它会自动让你继续写剩余部分。
-- 绝不要在一个代码块中间截断后写 <<<MORE>>>，必须写完当前文件再续。
+- 如果你预判本轮回复太长、可能写不完全部内容，请在「一个完整的文件块」结束后（<<<END>>> 之后的新行）另起一行写 
+-  必须独占一行；系统检测到它会自动让你继续写剩余部分。
+- 绝不要在一个代码块中间截断后写 ，必须写完当前文件再续。
 - 续写时从上次结尾接着写，不要重复已写内容。
+
+【单文件长度红线（重要）】
+- 单个 SAVE 块尽量控制在 200 行以内。超过 200 行的文件，请拆成多个小文件/模块，不要强行一个块写完。
+- 落盘脚本会对"疑似截断"的文件拒绝写入并转存到 .pending/（fail-safe）。
 """
 
 
+# ---------- 组装历史 ----------
+# 自动扫描目录（默认扫整个项目，与 SAVE 可写范围一致）
+AUTO_SCAN_DIRS = ["."]
+SCAN_EXTS = (".ts", ".tsx", ".js", ".jsx", ".css", ".json", ".md", ".html", ".py")
+SCAN_SKIP_DIRS = {
+    "node_modules", "dist", "build", ".git", "__pycache__",
+    ".venv", "venv", "out", ".next", "coverage", ".pending",
+}
 
+FEED_MAX_CHARS = 120_000
 
 
 def build_history():
@@ -165,7 +229,6 @@ def build_history():
                     continue
                 full = os.path.join(cur, fn)
                 rel = os.path.relpath(full, BASE_DIR).replace("\\", "/")
-                # 三个 md 已在上方单独喂，跳过避免重复
                 if rel in ("project_state.md", "GDD.md", "tech_spec.md"):
                     continue
                 try:
@@ -173,6 +236,8 @@ def build_history():
                 except Exception as e:
                     ctx += f"\n\n【文件 {rel}】（读取失败: {e}）"
                     continue
+                if len(body) > FEED_MAX_CHARS:
+                    body = body[:FEED_MAX_CHARS] + f"\n\n...（已截断，原文件过长）"
                 fed_files.append(rel)
                 ctx += f"\n\n【文件 {rel}】\n```\n{body}\n```"
 
@@ -186,7 +251,6 @@ history = build_history()
 
 
 def call_api(messages, timeout=300):
-    """单次请求，返回 content 字符串；失败返回 None。"""
     data = json.dumps({"model": MODEL, "messages": messages}).encode()
     req = urllib.request.Request(URL, data=data, headers={
         "Content-Type": "application/json",
@@ -200,8 +264,6 @@ def call_api(messages, timeout=300):
     except Exception as e:
         print("请求异常:", e)
         return None
-
-    # 安全取值，防结构异常崩掉
     try:
         return result["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
@@ -212,43 +274,30 @@ def call_api(messages, timeout=300):
 def ask(msg):
     history.append({"role": "user", "content": msg})
 
-    # 续写循环：检测 <<<MORE>>>，自动请求后续
     full_content = ""
     while True:
         content = call_api(history)
         if content is None:
-            # 失败则回滚本轮的 user 消息，避免污染上下文
             history.pop()
             return
 
-        has_more = "<<<MORE>>>" in content
-        # 剥掉续写标记后再拼接/入库
-        content = content.replace("<<<MORE>>>", "").rstrip()
-
+        has_more = "" in content
+        content = content.replace("", "").rstrip()
         full_content = (full_content + "\n" + content) if full_content else content
-
-        # 把本次（去掉 MORE 的）内容放进上下文，供下一次续写参考
         history.append({"role": "assistant", "content": content})
 
         if not has_more:
             break
-
-        # 要求模型接着上次结尾继续
         history.append({"role": "user",
                         "content": "继续，从上次结尾接着写，不要重复已写内容，写完用收尾标记结束。"})
 
-    # 解析 SAVE 块并写盘（基于完整拼接结果）
     clean, saves = extract_saves(full_content)
-
-    # 打印给用户看（去掉标记后的干净文本）
     print(clean)
 
     if saves:
-        print(f"\n（本轮保存 {len(saves)} 个文件，已自动 push）")
-        # 关键：回传“已保存”给模型，形成闭环；同时避免把代码全文留在上下文
         saved_list = ", ".join(p for p, _ in saves)
         history.append({"role": "system",
-                        "content": f"[系统] 以下文件已成功落盘并推送：{saved_list}"})
+                        "content": f"[系统] 本轮尝试落盘：{saved_list}（疑似截断的已被拒绝并转存 .pending/）"})
 
 
 # ---------- 启动 ----------
@@ -259,7 +308,7 @@ if not os.path.exists(STATE_FILE):
               f"# 项目状态\n\n当前阶段：阶段1 设计沟通\n创建时间：{datetime.datetime.now():%Y-%m-%d}\n\n"
               "## 进度\n- [ ] GDD 确认\n- [ ] 技术方案确认\n- [ ] 代码实现\n")
 
-print("=== 游戏设计协作（自动 git push）===")
+print("=== 游戏设计协作（fail-safe 落盘）===")
 print(f"项目目录: {BASE_DIR}")
 print("命令: /push 手动推送  /status 看状态  /reset 清空上下文  /sync 同步文件  exit 退出\n")
 
@@ -280,7 +329,7 @@ while True:
         history = build_history()
         print("  [已重置上下文]")
         continue
-    if q in SYNC_KEYWORDS:
+    if q in ("/sync", "同步", "刷新"):
         new_sys = build_history()[0]
         if history and history[0]["role"] == "system":
             history[0] = new_sys

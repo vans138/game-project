@@ -1,20 +1,184 @@
-// 注意：本文件名虽然显示为 RunEngine.ts，但内容是"补齐尾巴版"。
-// 若你发现 RunEngine.ts 被本文件覆盖成了只剩尾巴，请把这份尾巴按注释里的提示
-// 粘到你的 RunEngine.ts 末尾即可（或者等我把整份一次贴全）。
-// ============================================================
-// 从 buildPhaseView 的 `const coerceCandidates =` 之后接续
-// （若上一条落盘后文件已经包含到 coerceCandidates 变量名，直接把下面这一段贴到它后面）
-// ============================================================
+// RunEngine v9（精简完整版）
+// - 数据层继承自 RunEngineBase
+// - 本文件只放：Snapshot 结构、buildPhaseView、identityHint、choose、emitAndSnap、subscribe
+// - 外部只 import { RunEngine, type Snapshot }，接口不变
 
-// 下面整段应当追加在 `const coerceCandidates =` 之后：
-//   this.coerceCandidates()
-//   if (coerceCandidates.length > 0 && this.state.player.dragonCoerceUsed < 2) {
-//     choices.push({ id: 'coerce', text: `龙迫（${coerceCandidates.length} 个目标）` })
-//   }
-//   return { narrative: prefix + '【主选项】你把这个月花在哪里？', choices }
-// }
-//
-// 下面是文件剩余部分（feedback 及之后到文件末尾）：
+import type { Script } from '../script/types'
+import { evalCondition } from './evaluator'
+import { listInvestigable } from './clues'
+import { RunEngineBase, CHOICE_SKIP, type MonthPhase } from './RunEngineBase'
+import { acquireClue } from './clues'
+
+export interface Snapshot {
+  monthIndex: number
+  year: number
+  month: number
+  monthType: 'school' | 'holiday'
+  phase: MonthPhase
+  phaseHint: string
+  narrative: string
+  choices: { id: string; text: string }[]
+  finished: boolean
+  outcomeTitle?: string
+  outcomeNarrative?: string
+  affinityPanel: { id: string; value: number }[]
+  affinityTotal: number
+  affinityCap: number
+  identityName: string
+  isEventMonth: boolean
+  clues: { id: string; title: string; stage: number; total: number; done: boolean }[]
+  playerPower: number
+  acquiredFactors: string[]
+  coercedTargetName?: string
+}
+
+export class RunEngine extends RunEngineBase {
+  private listeners = new Set<(s: Snapshot) => void>()
+
+  constructor(script: Script, identityId: string, seed?: number) {
+    super(script, identityId, seed)
+  }
+
+  snapshot(): Snapshot {
+    const md = this.monthDef()
+    const panel = Object.entries(this.state.player.affinity)
+      .map(([id, value]) => ({ id, value }))
+      .sort((a, b) => b.value - a.value)
+    const total = panel.reduce((s, p) => s + Math.max(0, p.value), 0)
+    const identity = this.script.identities.find((i) => i.id === this.state.player.identityId)
+
+    const cluesSnap = this.script.clues
+      .filter((c) => this.state.player.clueRuntime[c.id])
+      .map((c) => {
+        const entry = this.state.player.clueRuntime[c.id]
+        return {
+          id: c.id, title: c.title, stage: entry.stage,
+          total: c.stages.length, done: entry.stage >= c.stages.length,
+        }
+      })
+
+    const acquiredFactors = [...this.state.player.acquiredFactors]
+      .map((id) => this.script.acquiredFactors.find((a) => a.id === id)?.name ?? id)
+
+    const coercedTargetName = this.state.coerceState
+      ? this.npcName(this.state.coerceState.targetId)
+      : undefined
+
+    if (!md || this.state.finished) {
+      return {
+        monthIndex: this.state.monthIndex,
+        year: this.state.year,
+        month: this.state.month,
+        monthType: md?.type ?? 'school',
+        phase: 'done',
+        phaseHint: '结束',
+        narrative: this.lastOutcomeNarrative ?? '这一段结束了。',
+        choices: [],
+        finished: true,
+        outcomeTitle: this.lastOutcomeTitle,
+        outcomeNarrative: this.lastOutcomeNarrative,
+        affinityPanel: panel,
+        affinityTotal: total,
+        affinityCap: this.script.affinityCap,
+        identityName: identity?.name ?? '',
+        isEventMonth: this.state.monthRuntime.isEventMonth,
+        clues: cluesSnap,
+        playerPower: this.state.player.power,
+        acquiredFactors,
+        coercedTargetName,
+      }
+    }
+
+    const { narrative, choices } = this.buildPhaseView()
+    return {
+      monthIndex: this.state.monthIndex,
+      year: md.year,
+      month: md.month,
+      monthType: md.type,
+      phase: this.state.monthRuntime.phase,
+      phaseHint: this.state.phaseHint,
+      narrative,
+      choices,
+      finished: false,
+      affinityPanel: panel,
+      affinityTotal: total,
+      affinityCap: this.script.affinityCap,
+      identityName: identity?.name ?? '',
+      isEventMonth: this.state.monthRuntime.isEventMonth,
+      clues: cluesSnap,
+      playerPower: this.state.player.power,
+      acquiredFactors,
+      coercedTargetName,
+    }
+  }
+
+  private monthLogBlock(): string {
+    if (this.state.monthLog.length === 0) return ''
+    return '【本月已发生】\n' +
+      this.state.monthLog.map((l) => (l.startsWith('  ') ? l : '· ' + l)).join('\n') + '\n\n'
+  }
+
+  private identityHint(): string {
+    if (this.state.player.identityFactor === 'seal') {
+      return '（你偶尔能听见自己体内，还有另一个心跳。）'
+    }
+    return '（你偶尔能感觉到，有什么东西在躲着你。）'
+  }
+
+  private buildPhaseView(): { narrative: string; choices: { id: string; text: string }[] } {
+    const md = this.monthDef()
+    if (!md) return { narrative: '', choices: [] }
+    const ph = this.state.monthRuntime.phase
+    const head: string[] = []
+    head.push(`第 ${md.year} 学年 · ${md.month} 月 · ${md.type === 'holiday' ? '假期' : '上学'}`)
+    head.push(this.identityHint())
+    head.push('')
+    const prefix = head.join('\n') + '\n' + this.monthLogBlock()
+
+    if (ph === 'holidaySkip') {
+      return { narrative: prefix + '（假期）这个月不上学。', choices: [{ id: CHOICE_SKIP, text: '（假期）跳过' }] }
+    }
+
+    if (ph === 'intro') {
+      const ev = this.eventById(md.fixedEvent)
+      const body = ev ? `【导入】\n${ev.title}：\n${ev.narrative}` : '【导入】\n这个月和往常一样。'
+      return { narrative: prefix + body, choices: [{ id: 'intro_next', text: '继续' }] }
+    }
+
+    if (ph === 'mainChoice') {
+      if (this.state.mainChoice === 'investigate') {
+        const investigable = listInvestigable(this.script.clues, this.state.player.clueRuntime)
+        const choices: { id: string; text: string }[] = investigable.map((c) => ({
+          id: `investigate:${c.id}`,
+          text: `调查 · ${c.title}`,
+        }))
+        choices.push({ id: 'investigate:__cancel__', text: '算了，改做别的' })
+        return { narrative: prefix + '【调查线索】你要查哪一条？', choices }
+      }
+      if (this.state.mainChoice === 'coerce') {
+        const candidates = this.coerceCandidates()
+        const choices: { id: string; text: string }[] = candidates.map((id) => ({
+          id: `coerce:${id}`,
+          text: `龙迫 · ${this.npcName(id)}`,
+        }))
+        choices.push({ id: 'coerce:__cancel__', text: '算了，改做别的' })
+        return { narrative: prefix + '【龙迫】你要把体内的呼唤压向谁？', choices }
+      }
+
+      const choices: { id: string; text: string }[] = [{ id: 'study', text: '学习' }]
+      for (const npc of this.script.npcs) {
+        choices.push({ id: `bond:${npc.id}`, text: `拉近关系 · ${npc.name}` })
+      }
+      const investigable = listInvestigable(this.script.clues, this.state.player.clueRuntime)
+      if (investigable.length > 0 && !this.state.investigatedThisMonth) {
+        choices.push({ id: 'investigate', text: `调查线索（${investigable.length} 条可查）` })
+      }
+      const coerceCandidates = this.coerceCandidates()
+      if (coerceCandidates.length > 0 && this.state.player.dragonCoerceUsed < 2) {
+        choices.push({ id: 'coerce', text: `龙迫（${coerceCandidates.length} 个目标）` })
+      }
+      return { narrative: prefix + '【主选项】你把这个月花在哪里？', choices }
+    }
 
     if (ph === 'feedback') {
       const lines = [prefix + '【反馈】']
@@ -71,13 +235,6 @@
     }
 
     return { narrative: prefix, choices: [] }
-  }
-
-  private identityHint(): string {
-    if (this.state.player.identityFactor === 'seal') {
-      return '（你偶尔能听见自己体内，还有另一个心跳。）'
-    }
-    return '（你偶尔能感觉到，有什么东西在躲着你。）'
   }
 
   choose(choiceId: string): Snapshot {
@@ -162,7 +319,6 @@
       if (choiceId === 'summary_next') this.advanceMonth()
       return this.emitAndSnap()
     }
-
     return this.emitAndSnap()
   }
 
