@@ -1,15 +1,21 @@
 // 剧本数据层类型：结构对齐 JSON，全程可序列化，未来可原样导出为配置文件。
 // 设计原则（对接头充足性）：
-//   1) 矛盾点是剧本核心"插座"，核心字段最小化，其余全部塞进 data 袋，永不回改接口；
-//   2) 节点之间用 id 弱引用连接，不内嵌对象，一对多/多对一都不撕裂；
-//   3) 关系走外部关系表（id + kind 字符串 + data 袋），不污染节点本身；
-//   4) Condition / Effect 保留 custom 逃生口，新增类型不用改类型定义。
+//   1) 矛盾点是剧本核心"插座"，核心字段最小化，其余塞进 data 袋；
+//   2) 节点之间用 id 弱引用连接；
+//   3) 关系走外部关系表（id + kind + data 袋）；
+//   4) Condition / Effect 保留 custom 逃生口。
 //
 // 版本：
 //   v2：矛盾=事件源；矛盾→NPC影响（动态、带 require）
-//   v3：因子层（开局抽取、局内可变的"因子/布线"）
-//        - FactorDef / FactorState / Effect.factorShift / Script.factorPool
-//        - 因子大小仅靠 tier（major/minor）表达，不结构化 scope，人工规范影响范围
+//   v3：因子层（开局抽取、局内演化）
+//   v4（本版）：因子层收敛为「互斥组」模型
+//        - FactorDef 只保留身份信息（id/title/data），无 tier / 无 children
+//        - FactorGroup：一组成员（factorId + chance），chance 之和 ≤ 1；剩余=「都不选」
+//        - FactorGroup.special：'future' 标记「因子未来」特殊组
+//        - 因子未来组的 id 约定为 "<原因子id>::future"（ASCII 分隔，便于机器识别）
+//        - 运行态用 Set<FactorId>，不再有 FactorState / intensity / transform
+//        - 组与组之间不结构化（谁触发谁由配置层人工约定）
+//        - factorShift / factorIntensityAtLeast 全部删除；Condition 只留 factorActive
 
 // ---------- 通用逃生口 ----------
 
@@ -35,17 +41,10 @@ export type Condition =
   | { flag: string }
   | { goalProgressAtLeast: [goalId: string, value: number] }
   | { monthAtLeast: number }
-  | { factorActive: string }               // 因子处于激活态（v3）
-  | { factorIntensityAtLeast: [factorId: string, value: number] } // 因子强度（v3）
+  | { factorActive: string }   // 因子是否在已激活集合内
   | CustomCondition
 
 // ---------- 效果 ----------
-
-/** 因子变化：局内因子状态的操作单位一律是因子 id */
-export type FactorShift =
-  | { type: 'factorShift'; mode: 'toggle'; target: string; active: boolean }
-  | { type: 'factorShift'; mode: 'intensity'; target: string; delta: number }
-  | { type: 'factorShift'; mode: 'transform'; target: string; toFactorId: string }
 
 export type Effect =
   | { type: 'affinity'; target: string; value: number }
@@ -53,7 +52,6 @@ export type Effect =
   | { type: 'flag'; target: string }
   | { type: 'goalProgress'; target: string; value: number }
   | { type: 'log'; text: string }
-  | FactorShift
   | CustomEffect
 
 // ---------- 选择 ----------
@@ -63,7 +61,7 @@ export interface Choice {
   text: string
   require?: Condition
   effects: Effect[]
-  /** 链式多步：有则进入下一段事件（写死的强制转移）；缺省则按锚点/池逻辑占步 */
+  /** 强制转移：有则进入下一段事件；缺省则按锚点/池逻辑占步 */
   next?: string | null
 }
 
@@ -82,7 +80,7 @@ export interface EventDef {
   sameboxPlace?: string
   fromClue?: string
   fromConflict?: string
-  /** 事件池内的抽取权重，默认 1（v3：轻事件=池内加权抽取） */
+  /** 事件池抽取权重，默认 1 */
   weight?: number
   choices: Choice[]
   data?: Record<string, unknown>
@@ -140,37 +138,42 @@ export interface Clue {
   data?: Record<string, unknown>
 }
 
-// ---------- 因子 ----------
+// ---------- 因子（互斥组模型） ----------
 
 export type FactorId = string
 
-/** 因子大小：大因子定整局基调，小因子定局部摆动 */
-export type FactorTier = 'major' | 'minor'
-
-/**
- * 因子定义（剧本配置）：只定义"存在哪些因子、入池权重、大小"。
- * 影响范围不做结构化表达，由配置者按 tier 人工规范。
- */
+/** 因子定义：只有身份信息；不含任何"大小/层级/概率"语义 */
 export interface FactorDef {
   id: FactorId
   title: string
-  tier: FactorTier
-  /** 开局抽取权重，默认 1 */
-  weight?: number
   data?: Record<string, unknown>
 }
 
+/** 组内成员：factorId + 自带概率 */
+export interface FactorGroupMember {
+  factorId: FactorId
+  /** 落在 [0,1]；同组内 chance 之和建议 ≤ 1，剩余概率代表「都不选」 */
+  chance: number
+}
+
+/** 特殊组类型：目前只定义 future；将来可扩展其它特殊组（如 forced / scripted） */
+export type FactorGroupSpecial = 'future'
+
 /**
- * 因子运行态（局内，可变）。
- * 玩家的行为/选择可以通过 Effect.factorShift 改写它：
- *   toggle    激活/失活
- *   intensity 强度增减（0~N）
- *   transform 转化为另一个因子（本因子失活、目标因子激活）
+ * 因子互斥组：一次演化 = 在本组内按概率独立互斥选取（或者一个都不选）。
+ *   - 普通组：概率抽取；都不选合法。
+ *   - 特殊组 special='future'（因子未来）：
+ *       * 一定触发（必然命中组内某成员）
+ *       * 视为该因子本轮"最后一次触发"
+ *       * 触发后原因子从已激活集合中移除（off）
+ *       * 组 id 约定：`<原因子id>::future`
+ * 组与组之间的关系不结构化（由配置层人工约定触发顺序/条件）。
  */
-export interface FactorState {
-  id: FactorId
-  active: boolean
-  intensity: number
+export interface FactorGroup {
+  id: string
+  /** 特殊组标记；普通组可不填 */
+  special?: FactorGroupSpecial
+  members: FactorGroupMember[]
   data?: Record<string, unknown>
 }
 
@@ -239,7 +242,9 @@ export interface Script {
   conflictLinks: ConflictLink[]
   conflictEventLinks: ConflictEventLink[]
   conflictNpcEffects: ConflictNpcEffect[]
-  /** 因子池：开局按权抽取，局内可变（v3） */
+  /** 因子池：开局按权抽取初始化；因子为互斥组模型 */
   factorPool: FactorDef[]
+  /** 因子互斥组：演化按组进行 */
+  factorGroups: FactorGroup[]
   affinityCap: number
 }
