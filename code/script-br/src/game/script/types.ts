@@ -1,16 +1,12 @@
-// 剧本数据层类型（v5）
-// 相对 v4.3 的变更：
-//   1) 引入「玄幻身份」IdentityDef（本批只有龙烬余孤），身份带身份因子池
-//   2) 关系状态简化版 RelationsState（crushId + 列表）
-//   3) 随机互动事件 InteractEvent / InteractNode / InteractChoice（本批空池，结构化先就位）
-//   4) MonthDef 增加 type: 'school' | 'holiday'
-//   5) 删掉旧的冲突顶层结构（conflicts/conflictLinks/...），冲突信息改为因子内嵌
-//      ——本批不填世界因子，只留 FactorDef.conflict 字段形状，防止后续再改类型
+// 剧本数据层类型（v6）
+// 相对 v5：
+//   1) Condition 正式支持 identityFactorIs（去掉 script1 里的 as never 临时 cast）
+//   2) InteractNode 的 byMutual/byOneSide 分叉改为更明确的 MutualBranches
+//   3) 新增 GoalsRuntime 相关的小工具类型（引擎私有，此处只补类型说明）
 
 export interface CustomCondition { type: 'custom'; kind: string; payload?: Record<string, unknown> }
 export interface CustomEffect { type: 'custom'; kind: string; payload?: Record<string, unknown> }
 
-// ---------- 条件 ----------
 export type Condition =
   | { all: Condition[] }
   | { any: Condition[] }
@@ -23,7 +19,6 @@ export type Condition =
   | { identityFactorIs: 'seal' | 'ancient' }
   | CustomCondition
 
-// ---------- 效果 ----------
 export type Effect =
   | { type: 'affinity'; target: string; value: number }
   | { type: 'unlock'; target: string }
@@ -33,7 +28,6 @@ export type Effect =
   | { type: 'setTerminate'; groupId: string; value: 0 | 1 }
   | CustomEffect
 
-// ---------- 选项 / 事件 ----------
 export interface Choice {
   id: string
   text: string
@@ -58,7 +52,6 @@ export interface EventDef {
   data?: Record<string, unknown>
 }
 
-// ---------- 因子（世界因子本批不激活，仅类型保留）----------
 export type FactorId = string
 export interface FactorConflict {
   title: string
@@ -69,7 +62,6 @@ export interface FactorConflict {
 export interface FactorDef {
   id: FactorId
   title: string
-  /** 因子内嵌的冲突根（方案 A：矛盾并入因子） */
   conflict?: FactorConflict
   data?: Record<string, unknown>
 }
@@ -88,25 +80,17 @@ export interface FactorGroup {
   data?: Record<string, unknown>
 }
 
-/** 因子运行态（目前只保留挂点） */
 export interface FactorRuntime {}
 
-// ---------- 身份因子（本批核心）----------
-export type IdentityFactorId = 'seal' | 'ancient'   // 封龙 / 古龙
+export type IdentityFactorId = 'seal' | 'ancient'
 
-/**
- * 玄幻身份定义。身份是跨轮回固定的「携带物」。
- * 定中求变：选身份后，从 identityFactorPool 里随机抽一个作为本局的身份因子。
- */
 export interface IdentityDef {
   id: string
   name: string
   desc: string
-  /** 身份生成的身份因子池（本批恒为两项：seal / ancient） */
   identityFactorPool: IdentityFactorId[]
 }
 
-// ---------- 关系状态（简化版）----------
 export interface NpcDef {
   id: string
   name: string
@@ -136,7 +120,6 @@ export interface OutcomeDef {
   minGoalRatio?: number
 }
 
-// ---------- 时间轴 ----------
 export type MonthType = 'school' | 'holiday'
 export interface MonthDef {
   index: number
@@ -144,13 +127,12 @@ export interface MonthDef {
   month: number
   type: MonthType
   stepCount: number
-  /** 事件月的固定事件（如期中/期末）。假期为空 */
   fixedEvent?: string
   randomPool?: string[]
   silentStudy?: boolean
 }
 
-// ---------- 随机互动事件（本批结构就位，池子先空）----------
+// ---------- 随机互动事件 ----------
 export type InteractKind = 'short' | 'maybeLong' | 'long'
 
 export interface InteractRequires {
@@ -162,19 +144,13 @@ export interface InteractRequires {
 export interface InteractChoice {
   text: string
   requires?: InteractRequires
-  /**
-   * 走向：
-   *   - 直接给节点 → 进入该节点
-   *   - 给 { byMutual, byOneSide } → 由「双方主动」判定落点
-   * 出现 byMutual/byOneSide 即意味着该事件可能「变长」
-   */
+  /** 直接给节点 → 进入该节点；给 {byMutual,byOneSide} → 走双向判定 */
   next?: InteractNode | { byMutual: InteractNode; byOneSide: InteractNode }
 }
 
 export interface InteractNode {
   text: string
   choices?: InteractChoice[]
-  /** 概率分支：p 命中走 ifHit，否则 ifMiss */
   chance?: { p: number; ifHit: InteractNode; ifMiss: InteractNode }
 }
 
@@ -186,7 +162,6 @@ export interface InteractEvent {
   root: InteractNode
 }
 
-// ---------- 剧本 ----------
 export interface Script {
   id: string
   meta: { title: string; era: string; place: string }

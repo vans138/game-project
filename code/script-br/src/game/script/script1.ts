@@ -1,13 +1,5 @@
-// 第一份剧本（v6）：青川中学 · Y1 上学期 + 寒假（Y1-9 ~ Y2-2）
-// 相对 v5 的变更：
-//   1) 事件内容全部改为「身份感知」——封龙/seal 与古龙/ancient 走不同文本与选项
-//   2) 固定事件（开学/期中/期末）有真实选项效果
-//   3) 新增 interactEvents（3–5 个），其中一个是 maybeLong（晚自习后去看她）
-//   4) 世界因子仍然不激活：factorPool / factorGroups 留空
-//
-// 身份感知的实现方式：
-//   - 同一事件写两组选项，用 identityFactorIs 条件互斥；
-//   - narrative 里的暗示句由 RunEngine 根据 identityFactor 动态拼，剧本只管事件本身。
+// 第一份剧本（v6.1）：青川中学 · Y1 上学期 + 寒假（Y1-9 ~ Y2-2）
+// 相对 v6 的变更：去掉 as never 临时 cast，require 走正式 Condition 类型。
 
 import type {
   Script,
@@ -19,7 +11,6 @@ import type {
   InteractEvent,
 } from './types'
 
-// ---------- 玄幻身份：龙烬余孤 ----------
 const identities: IdentityDef[] = [
   {
     id: 'longjin_yugu',
@@ -32,13 +23,6 @@ const identities: IdentityDef[] = [
 const factorPool: FactorDef[] = []
 const factorGroups: FactorGroup[] = []
 
-// ---------- 时间轴 ----------
-//   Y1-9  开学月（事件：开学典礼）
-//   Y1-10 普通月
-//   Y1-11 期中月（事件：期中考试）
-//   Y1-12 普通月
-//   Y1-1  期末月（事件：期末考试）
-//   Y1-2  寒假（假期月，跳过）
 function buildTimeline(): MonthDef[] {
   return [
     { index: 1, year: 1, month: 9,  type: 'school',  stepCount: 2, fixedEvent: 'e_term_open'  },
@@ -50,7 +34,6 @@ function buildTimeline(): MonthDef[] {
   ]
 }
 
-// ---------- 固定事件（含身份分叉）----------
 const events: EventDef[] = [
   {
     id: 'e_term_open', kind: 'fixed', season: 'school', title: '开学典礼',
@@ -67,12 +50,12 @@ const events: EventDef[] = [
         { type: 'goalProgress', target: 'g_truth', value: 1 },
         { type: 'log', text: '你在云层里看见一道极淡的、像鳞片一样的纹路。' },
       ] },
-      { id: 'c_listen', text: '屏住呼吸，去听那个声音', require: { identityFactorIs: 'seal' } as never, effects: [
+      { id: 'c_listen', text: '屏住呼吸，去听那个声音', require: { identityFactorIs: 'seal' }, effects: [
         { type: 'goalProgress', target: 'g_truth', value: 1 },
         { type: 'flag', target: 'heard_second_heart' },
         { type: 'log', text: '很轻，很闷，像在厚厚的冰层下敲了一下。' },
       ] },
-      { id: 'c_hide', text: '下意识缩了一下肩，假装什么都没感觉到', require: { identityFactorIs: 'ancient' } as never, effects: [
+      { id: 'c_hide', text: '下意识缩了一下肩，假装什么都没感觉到', require: { identityFactorIs: 'ancient' }, effects: [
         { type: 'flag', target: 'hid_presence' },
         { type: 'log', text: '你觉得阳光有点刺。人群里有人下意识地往远离你的方向退了半步。' },
       ] },
@@ -94,7 +77,7 @@ const events: EventDef[] = [
         { type: 'affinity', target: 'npc_qiu', value: -3 },
         { type: 'log', text: '邱同学“哦”了一声，走开时加快了步子。' },
       ] },
-      { id: 'c_truth', text: '“我最近……也在想一些奇怪的事。”', require: { affinityAtLeast: ['npc_qiu', 20] } as never, effects: [
+      { id: 'c_truth', text: '“我最近……也在想一些奇怪的事。”', require: { affinityAtLeast: ['npc_qiu', 20] }, effects: [
         { type: 'affinity', target: 'npc_qiu', value: 10 },
         { type: 'goalProgress', target: 'g_truth', value: 1 },
         { type: 'goalProgress', target: 'g_bond', value: 1 },
@@ -117,11 +100,11 @@ const events: EventDef[] = [
         { type: 'goalProgress', target: 'g_truth', value: 1 },
         { type: 'log', text: '你认出了监考席斜后方，站着一个根本不在这间教室里的人。' },
       ] },
-      { id: 'c_calm', text: '用手指按住太阳穴，把那个声音压下去', require: { identityFactorIs: 'seal' } as never, effects: [
+      { id: 'c_calm', text: '用手指按住太阳穴，把那个声音压下去', require: { identityFactorIs: 'seal' }, effects: [
         { type: 'flag', target: 'pushed_down_voice' },
         { type: 'log', text: '声音停了。你听见自己两个心跳，一起慢下来。' },
       ] },
-      { id: 'c_leak', text: '不管它，让它出来', require: { identityFactorIs: 'ancient' } as never, effects: [
+      { id: 'c_leak', text: '不管它，让它出来', require: { identityFactorIs: 'ancient' }, effects: [
         { type: 'goalProgress', target: 'g_truth', value: 1 },
         { type: 'flag', target: 'let_slipped' },
         { type: 'log', text: '考场的灯闪了一下。前排两个同学同时回头看了看你。' },
@@ -166,7 +149,7 @@ const events: EventDef[] = [
         { type: 'flag', target: 'remembered_exam' },
         { type: 'log', text: '你想起了上一次，同样的题，不同的答案。' },
       ] },
-      { id: 'c_ask', text: '向监考老师举手，说了一个本不该被知道的名字', require: { goalProgressAtLeast: ['g_truth', 3] } as never, effects: [
+      { id: 'c_ask', text: '向监考老师举手，说了一个本不该被知道的名字', require: { goalProgressAtLeast: ['g_truth', 3] }, effects: [
         { type: 'goalProgress', target: 'g_truth', value: 2 },
         { type: 'affinity', target: 'npc_he', value: 8 },
         { type: 'log', text: '监考席后的何老师整个人僵住。她没有回答，只是在你交卷后，把你单独留了下来。' },
@@ -175,12 +158,6 @@ const events: EventDef[] = [
   },
 ]
 
-// ---------- 随机互动事件 ----------
-// 本批填 4 个：
-//   it_bench       —— 短事件：操场上碰到一个人
-//   it_latenight   —— maybeLong：晚自习后要不要去看看她/他
-//   it_rooftop     —— 短事件：天台抽烟的人
-//   it_oldfloor    —— maybeLong：旧楼那扇门又出现（身份分叉）
 const interactEvents: InteractEvent[] = [
   {
     id: 'it_bench', kind: 'short', weight: 3,
@@ -200,13 +177,15 @@ const interactEvents: InteractEvent[] = [
   },
   {
     id: 'it_latenight', kind: 'maybeLong', weight: 4,
-    requires: { hasCrush: false }, // 占位：crush 尚未引入，目前不限制；后续改成 true
     root: {
       text: '某天你学得入了迷，很晚才走。教室里只剩你一个人，走廊的灯也已经关了大半。\n窗外黑着，只有对面楼还隐约亮着一格。',
       choices: [
         {
           text: '走过去，看一眼',
-          next: { text: '你走到窗边。对面那格里的人影动了一下，也朝这边看过来。\n隔着两个楼的距离，你们都停住了。' },
+          next: {
+            byMutual: { text: '你走到窗边。对面那格里的人影动了一下，也朝这边看过来。\n隔着两个楼的距离，你们都停住了。' },
+            byOneSide: { text: '你走到窗边。对面那格里的人影没有动——也许只是忘了关灯。' },
+          },
         },
         {
           text: '关灯，直接走',
@@ -259,7 +238,6 @@ const interactEvents: InteractEvent[] = [
   },
 ]
 
-// ---------- 剧本导出 ----------
 export const SCRIPT_1: Script = {
   id: 'campus-y1-upper',
   meta: { title: '轮回校园', era: '当代', place: '青川中学' },
