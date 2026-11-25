@@ -2,8 +2,12 @@
 // 设计原则（对接头充足性）：
 //   1) 矛盾点是剧本核心"插座"，核心字段最小化，其余全部塞进 data 袋，永不回改接口；
 //   2) 节点之间用 id 弱引用连接，不内嵌对象，一对多/多对一都不撕裂；
-//   3) 关系走外部 conflictLinks（id + kind 字符串），不污染节点本身；
+//   3) 关系走外部关系表（id + kind 字符串 + data 袋），不污染节点本身；
 //   4) Condition / Effect 保留 custom 逃生口，新增类型不用改类型定义。
+//
+// 本版新增（v2）：
+//   - 矛盾点 = 事件源：ConflictEventLink（矛盾 ↔ 事件，弱引用）
+//   - 矛盾点影响 NPC：ConflictNpcEffect，每条可带 require（动态，按条件取生效那条）
 
 // ---------- 通用逃生口 ----------
 
@@ -86,7 +90,7 @@ export interface EventDef {
 // ---------- 矛盾点（剧本核心插座） ----------
 //
 // 核心字段务必最小、最稳。诉求 / 可非伤害解决途径 / 张力 / 迷雾 等语义
-// 一律放进 data 袋或外部 conflictLinks，不进结构，避免改接口。
+// 一律放进 data 袋或外部关系表，不进结构，避免改接口。
 
 export type ConflictId = string
 
@@ -102,14 +106,42 @@ export interface Conflict {
   data: Record<string, unknown>
 }
 
-/** 矛盾关系类型（字符串，方便未来扩展新边） */
+/** 关系类型（字符串，方便未来扩展新边） */
 export type ConflictLinkKind = string
 
-/** 矛盾关系边：互斥 / 依赖 / 争稀缺物 / 证词分歧 …… 全部走这里 */
+/** 矛盾 ↔ 矛盾关系边：互斥 / 依赖 / 争稀缺物 / 证词分歧 …… */
 export interface ConflictLink {
   from: ConflictId
   to: ConflictId
   kind: ConflictLinkKind
+  data?: Record<string, unknown>
+}
+
+/** 矛盾 ↔ 事件：矛盾作为事件源，可挂任意多个事件 */
+export interface ConflictEventLink {
+  conflictId: ConflictId
+  eventId: string
+  /** 关系类型：如 spawn / escalate / resolve / witness */
+  kind: ConflictLinkKind
+  /** 是否仅在特定时段（上学/假期）生效，可选 */
+  season?: Season
+  require?: Condition
+  data?: Record<string, unknown>
+}
+
+/**
+ * 矛盾 ↔ NPC 影响：同一条矛盾对某个 NPC 的影响。
+ * 动态设计：同一 (conflict, npc) 可存在多条，每条可带 require；
+ * 运行时取"满足条件的第一条"生效。
+ */
+export interface ConflictNpcEffect {
+  conflictId: ConflictId
+  npcId: string
+  /** 对好感的影响值（可为负）；可逆表示是否随矛盾消解而回滚 */
+  value: number
+  reversible: boolean
+  /** 生效条件（阶段/迷雾/身份等）；缺省=恒生效，退化为静态 */
+  require?: Condition
   data?: Record<string, unknown>
 }
 
@@ -133,7 +165,7 @@ export interface Clue {
   data?: Record<string, unknown>
 }
 
-// ---------- 目标 / NPC / 角色（沿用上一版） ----------
+// ---------- 目标 / NPC / 角色 ----------
 
 export interface GoalDef {
   id: string
@@ -172,7 +204,6 @@ export interface OutcomeDef {
 
 // ---------- 月份定义（时间片） ----------
 
-/** 月份类型：上学月 / 假期月 */
 export type MonthType = 'school' | 'holiday'
 
 export interface MonthDef {
@@ -206,8 +237,12 @@ export interface Script {
   outcomes: OutcomeDef[]
   /** 矛盾点：剧本核心插座 */
   conflicts: Conflict[]
-  /** 矛盾关系边 */
+  /** 矛盾 ↔ 矛盾关系边 */
   conflictLinks: ConflictLink[]
+  /** 矛盾 ↔ 事件（矛盾作为事件源） */
+  conflictEventLinks: ConflictEventLink[]
+  /** 矛盾 ↔ NPC 影响（动态，可带条件） */
+  conflictNpcEffects: ConflictNpcEffect[]
   /** 好感总封顶（跨 NPC 分配上限） */
   affinityCap: number
 }
