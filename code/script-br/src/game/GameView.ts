@@ -1,5 +1,7 @@
-// GameView：UI 只读快照。
-// v4.3：新增 clues（本局投影出的线索，带调查深度）。
+// GameView：UI 只读快照（v5）
+// 变更：
+//   - 增加 phase / phaseHint / identityName / isEventMonth / monthType
+//   - 不再包含 clues / activeFactors（本批不激活世界因子与线索）；后续需要再补回
 
 export interface GameChoice {
   id: string
@@ -11,21 +13,25 @@ export interface AffinityItem {
   value: number
 }
 
-export interface ActiveFactorItem {
-  id: string
-  title: string
-}
-
-export interface ClueItem {
-  clueId: string
-  text: string
-  conflictTitle: string
-  remaining: number
-  totalDepth: number
-}
+export type GamePhase =
+  | 'intro'
+  | 'mainChoice'
+  | 'feedback'
+  | 'smallEvent'
+  | 'fixedEvent'
+  | 'interact1'
+  | 'interact2'
+  | 'summary'
+  | 'holidaySkip'
+  | 'done'
 
 export interface GameView {
   month: number
+  year: number
+  monthOfYear: number
+  monthType: 'school' | 'holiday'
+  phase: GamePhase
+  phaseHint: string
   background: string
   narrative: string
   choices: GameChoice[]
@@ -35,8 +41,8 @@ export interface GameView {
   affinity: AffinityItem[]
   affinityTotal: number
   affinityCap: number
-  activeFactors: ActiveFactorItem[]
-  clues: ClueItem[]
+  identityName: string
+  isEventMonth: boolean
 }
 
 export interface GameSource {
