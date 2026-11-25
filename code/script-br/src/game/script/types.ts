@@ -1,5 +1,11 @@
-// 剧本数据层类型（v4.2）：在 v4 基础上补 Script.clues（矛盾投影出的线索池）。
-// 说明：仅新增 clues 字段，其余结构与 v4 一致。
+// 剧本数据层类型（v4.3）：
+//   - Clue 增加 factorId（线索由哪个因子投影）
+//   - FactorGroupMember 增加 special?: 'terminate'
+//   - 终结成员规则：chance 只允许 0 或 1；为 1 时硬压制其它成员，必然命中终结
+//   - Effect 增加 setTerminate（把某终结成员概率设为 0/1）
+//   - 运行态：Map<FactorId, FactorRuntime>，FactorRuntime 目前只有 termination 字段位
+//     注意：termination 实际由"未来组终结成员 chance 是否为 1"决定，运行态不必再存布尔；
+//     这里保留 FactorRuntime 作为挂点，但本版本不使用。见 factorEvolve.ts 注释。
 
 export interface CustomCondition { type: 'custom'; kind: string; payload?: Record<string, unknown> }
 export interface CustomEffect { type: 'custom'; kind: string; payload?: Record<string, unknown> }
@@ -21,6 +27,8 @@ export type Effect =
   | { type: 'flag'; target: string }
   | { type: 'goalProgress'; target: string; value: number }
   | { type: 'log'; text: string }
+  // 把某"终结成员"概率设为指定值（0 或 1）
+  | { type: 'setTerminate'; groupId: string; value: 0 | 1 }
   | CustomEffect
 
 export interface Choice {
@@ -68,6 +76,8 @@ export interface ConflictNpcEffect {
 export type ClueId = string
 export interface Clue {
   id: ClueId
+  /** 该线索由哪个因子投影出来（投影门控依据） */
+  factorId: string
   conflictId: ConflictId
   text: string
   projectedMonth?: number
@@ -77,13 +87,26 @@ export interface Clue {
 
 export type FactorId = string
 export interface FactorDef { id: FactorId; title: string; data?: Record<string, unknown> }
-export interface FactorGroupMember { factorId: FactorId; chance: number }
+
+export type FactorMemberSpecial = 'terminate'
+export interface FactorGroupMember {
+  factorId: FactorId
+  chance: number
+  /** 终结成员：chance 只允许 0/1；为 1 时硬压制其它成员 */
+  special?: FactorMemberSpecial
+}
+
 export type FactorGroupSpecial = 'future'
 export interface FactorGroup {
   id: string
   special?: FactorGroupSpecial
   members: FactorGroupMember[]
   data?: Record<string, unknown>
+}
+
+/** 因子运行态：目前不使用额外字段；保留扩展点 */
+export interface FactorRuntime {
+  // 预留
 }
 
 export interface GoalDef { id: string; title: string; target: number }
@@ -139,7 +162,6 @@ export interface Script {
   conflictNpcEffects: ConflictNpcEffect[]
   factorPool: FactorDef[]
   factorGroups: FactorGroup[]
-  /** 线索池：矛盾的投影来源（v4.2 新增） */
   clues: Clue[]
   affinityCap: number
 }
