@@ -1,10 +1,8 @@
 // 第一份剧本：青川中学 · 三年（9月入学 → 三年后9月大学录取）
 // 单玩家，11 个 NPC（8 常驻 + 3 随机）。
 //
-// 本版重点（v4）：
-//   1) 因子层对齐「互斥组」模型：factorPool 只留 id/title，factorGroups 配组与概率；
-//   2) 「因子未来」组 id 约定为 "<原因子id>::future"，special='future'；
-//   3) 其余数据（矛盾 / 关系边 / 冲突事件源 / NPC 影响 / 事件 season / 时间轴）沿用 v3。
+// v4.1：给开局主基调组加 data.gate='opening'，使其只在开局抽一次，
+//       之后每轮演化不再参与（普通组默认每轮都参与）。
 
 import type {
   Script,
@@ -17,7 +15,7 @@ import type {
   FactorGroup,
 } from './types'
 
-// ---------- 矛盾点（核心插座） ----------
+// ---------- 矛盾点 ----------
 const conflicts: Conflict[] = [
   {
     id: 'c_parents',
@@ -47,13 +45,13 @@ const conflicts: Conflict[] = [
   },
 ]
 
-// ---------- 矛盾 ↔ 矛盾 关系边 ----------
+// ---------- 矛盾 ↔ 矛盾 ----------
 const conflictLinks: ConflictLink[] = [
   { from: 'c_parents', to: 'c_top_rank', kind: 'mutex', data: { note: '家族把你往学业上推' } },
   { from: 'c_old_door', to: 'c_parents', kind: 'reveals', data: { note: '门后揭示家族旧事' } },
 ]
 
-// ---------- 矛盾 ↔ 事件（矛盾作为事件源） ----------
+// ---------- 矛盾 ↔ 事件 ----------
 const conflictEventLinks: ConflictEventLink[] = [
   { conflictId: 'c_parents', eventId: 'e_open', kind: 'seed', season: 'school' },
   { conflictId: 'c_parents', eventId: 'e_midterm', kind: 'escalate', season: 'school' },
@@ -63,7 +61,7 @@ const conflictEventLinks: ConflictEventLink[] = [
   { conflictId: 'c_top_rank', eventId: 'e_study', kind: 'spawn', season: 'school' },
 ]
 
-// ---------- 矛盾 ↔ NPC 影响（动态，取满足条件的第一条） ----------
+// ---------- 矛盾 ↔ NPC 影响 ----------
 const conflictNpcEffects: ConflictNpcEffect[] = [
   { conflictId: 'c_parents', npcId: 'npc_lin', value: -3, reversible: true },
   {
@@ -76,19 +74,13 @@ const conflictNpcEffects: ConflictNpcEffect[] = [
   { conflictId: 'c_old_door', npcId: 'npc_gu', value: 4, reversible: true },
 ]
 
-// ---------- 因子池（极简：只有身份信息） ----------
-// 大因子/小因子仅靠命名与语义规范，此处不再有 tier 字段。
+// ---------- 因子池 ----------
 const factorPool: FactorDef[] = [
-  // 家族线
   { id: 'f_family',      title: '家族裂痕' },
-  // 旧楼线
   { id: 'f_oldfloor',    title: '旧楼低语' },
-  // 学业线
   { id: 'f_rivalry',     title: '学业竞争' },
-  // 小因子（局部摆动）
   { id: 'f_new_seatmate', title: '换了同桌' },
   { id: 'f_rainy_week',   title: '连绵阴雨' },
-  // 未来因子（作为"因子未来"组的落点）
   { id: 'f_family_reconciled', title: '家族和解' },
   { id: 'f_family_broken',     title: '家族决裂' },
   { id: 'f_door_open',         title: '门被打开' },
@@ -96,20 +88,11 @@ const factorPool: FactorDef[] = [
 ]
 
 // ---------- 因子互斥组 ----------
-// 约定：
-//   普通组：组内按 chance 独立互斥选取（剩余概率 = 都不选）
-//   未来组：special='future'，id 约定 "<原因子id>::future"
-//           * 一定触发
-//           * 视为该因子本轮最后一次触发
-//           * 触发后原因子 off（由引擎在演化后处理）
-// 组与组之间的触发顺序/条件由配置层人工约定（引擎按"当前激活因子"筛出参与的组）。
-
 const factorGroups: FactorGroup[] = [
-  // ---- 开局主基调组：大因子互斥选取 ----
-  // 家族裂痕 45% / 旧楼低语 35% / 学业竞争 20%（之和 1.0）
+  // 开局主基调：只在开局抽一次
   {
     id: 'grp_opening_theme',
-    data: { note: '开局主基调，三选一' },
+    data: { note: '开局主基调，三选一', gate: 'opening' },
     members: [
       { factorId: 'f_family',   chance: 0.45 },
       { factorId: 'f_oldfloor', chance: 0.35 },
@@ -117,20 +100,17 @@ const factorGroups: FactorGroup[] = [
     ],
   },
 
-  // ---- 小因子组（非互斥独立触发：把它们拆成两个"单选组"也行，这里保留为单组独立）----
-  // 换同桌 60%，否则不变（剩余 40% = 都不选）
+  // 小因子：每轮演化都参与（非互斥，靠拆成独立单成员组表达）
   {
     id: 'grp_small_seatmate',
     members: [{ factorId: 'f_new_seatmate', chance: 0.6 }],
   },
-  // 阴雨周 30%
   {
     id: 'grp_small_rain',
     members: [{ factorId: 'f_rainy_week', chance: 0.3 }],
   },
 
-  // ---- 家族线的未来：由 f_family 驱动 ----
-  // 命中后原因子 f_family 关闭；二选一（和解 60% / 决裂 40%）
+  // 家族线未来
   {
     id: 'f_family::future',
     special: 'future',
@@ -141,8 +121,7 @@ const factorGroups: FactorGroup[] = [
     ],
   },
 
-  // ---- 旧楼线的未来：由 f_oldfloor 驱动 ----
-  // 命中后原因子 f_oldfloor 关闭；打开 50% / 封死 50%
+  // 旧楼线未来
   {
     id: 'f_oldfloor::future',
     special: 'future',
@@ -155,10 +134,6 @@ const factorGroups: FactorGroup[] = [
 ]
 
 // ---------- 时间轴 ----------
-// 学年结构：9月开学 → 次年8月学年结束（约 12 个月）。
-// 假期：寒假 ≈ 1、2 月；暑假 ≈ 7、8 月（按月为整体标签）。
-// 最后一格：三年 9 月 = 大学录取 / 结局月。
-
 function buildTimeline(): MonthDef[] {
   const targetMonths: { year: number; month: number }[] = []
   const years = [1, 2, 3]
@@ -169,7 +144,7 @@ function buildTimeline(): MonthDef[] {
       targetMonths.push({ year: y, month: m })
     }
   }
-  targetMonths.push({ year: 3, month: 9 }) // 录取月，作为收尾
+  targetMonths.push({ year: 3, month: 9 })
 
   return targetMonths.map(({ year, month }, i) => {
     const index = i + 1
