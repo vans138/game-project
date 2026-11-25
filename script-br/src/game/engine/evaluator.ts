@@ -1,5 +1,6 @@
-// 条件求值与效果作用（v6）
-// EvalContext 增加 identityFactor，支持 identityFactorIs 条件。
+// 条件求值与效果作用（v7）
+// 相对 v6：
+//   - Effect 增加 gainClue；由 applyEffects 记录到 logs（真正写入线索由 RunEngine 拦截处理）
 
 import type { Condition, Effect, IdentityFactorId } from '../script/types'
 
@@ -33,8 +34,15 @@ export function evalCondition(cond: Condition | undefined, ctx: EvalContext): bo
   return false
 }
 
-export function applyEffects(effects: Effect[], ctx: EvalContext): string[] {
+export interface ApplyEffectsResult {
+  logs: string[]
+  /** v7：本次效果带来的线索 id（多条） */
+  gainedClues: string[]
+}
+
+export function applyEffects(effects: Effect[], ctx: EvalContext): ApplyEffectsResult {
   const logs: string[] = []
+  const gainedClues: string[] = []
   for (const e of effects) {
     switch (e.type) {
       case 'affinity':
@@ -52,9 +60,12 @@ export function applyEffects(effects: Effect[], ctx: EvalContext): string[] {
       case 'log':
         logs.push(e.text)
         break
+      case 'gainClue':
+        gainedClues.push(e.clueId)
+        break
       default:
         break
     }
   }
-  return logs
+  return { logs, gainedClues }
 }

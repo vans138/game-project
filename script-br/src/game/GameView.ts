@@ -1,4 +1,4 @@
-// GameView：UI 只读快照（v5）
+// GameView：UI 只读快照（v6）
 
 export interface GameChoice {
   id: string
@@ -39,6 +39,8 @@ export interface GameView {
   affinityTotal: number
   affinityCap: number
   identityName: string
+  /** 开局选定的"在意的人"（没选则为空串） */
+  crushName: string
   isEventMonth: boolean
 }
 

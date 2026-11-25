@@ -3,8 +3,8 @@
 ## 基本信息
 - 项目：剧本吃鸡（多人共享剧本 · 轮回养成 · 纯文本）
 - 阶段：阶段3 编码实现（进行中）
-- 当前批次：**第 2 批「剧情引擎 + 身份系统 + 月流程」已完成，能跑通**
-- 更新日期：2026-11-24（本版）
+- 当前批次：**第 2.1 批「crush 系统 + "她"的完整分叉树 + 两处地基修复」已完成，能跑通**
+- 更新日期：2026-11-26（本版）
 
 ---
 
@@ -23,13 +23,19 @@ cd "C:\Users\34903\game_project\script-br"
 - Vite dev 端口：**5173**
 - 浏览器：`http://localhost:5173`
 
+**类型检查 / 构建**（v7 起有了门禁）：
+```powershell
+& "C:\Program Files\nodejs\npm.cmd" run typecheck   # tsc --noEmit
+& "C:\Program Files\nodejs\npm.cmd" run build       # tsc --noEmit && vite build
+```
+
 **项目根不是 `C:\Users\34903\script-br`（那个不存在），而是 `C:\Users\34903\game_project`。**
 
 ---
 
 ## 二、目录结构与两套代码的关系（关键，别搞混）
 
-`C:\Users\34903\game_project\` 下并存四个"看起来像项目"的东西：
+`C:\Users\34903\game_project\` 下并存几个"看起来像项目"的东西：
 
 | 路径 | 状态 | 说明 |
 |---|---|---|
@@ -50,95 +56,100 @@ cd "C:\Users\34903\game_project\script-br"
 ```
 script-br/
   index.html
-  package.json
-  tsconfig.json
+  package.json           # dev / typecheck / build
+  tsconfig.json          # 已开 allowImportingTsExtensions
   vite.config.ts
   src/
     main.tsx
-    App.tsx              # 只用 createLocalSource + GameScreen，不要改
+    App.tsx              # 只用 createLocalSource + GameScreen
     game/
-      GameView.ts        # UI 只读快照 + GameSource 接口（v5）
-      LocalSource.ts     # 单机数据源：选身份 → RunEngine → GameView（v5）
-      GameScreen.tsx     # 局内 UI（v5）
-      styles.css         # 响应式样式（v5）
+      GameView.ts        # UI 只读快照 + GameSource 接口（v6，新增 crushName）
+      LocalSource.ts     # 单机数据源（v6）：选身份 → 选"在意的人" → RunEngine → GameView
+      GameScreen.tsx     # 局内 UI（v6，关系面板显示"在意 · XX"）
+      styles.css         # 响应式样式（v6）
       engine/
-        RunEngine.ts     # 月流程 8 阶段状态机 + 身份 + 随机互动树（v6）
+        RunEngine.ts     # 月流程 8 阶段状态机 + 身份 + crush + 随机互动树（v7）
         evaluator.ts     # 条件求值 + 效果结算（v6，支持 identityFactorIs）
         rng.ts           # 种子随机（mulberry32）
-        # 以下为旧版残留，本批未引用，可不管：
-        # clueTracker.ts / factorEvolve.ts（如果存在也不报错）
       script/
-        types.ts         # 剧本类型 v6（含 identities / interactEvents / identityFactorIs）
-        script1.ts       # 剧本 v6.1（Y1-9 ~ Y2-2，身份龙烬余孤，5 固定事件 + 4 随机互动）
+        types.ts         # 剧本类型 v7（InteractRequires.crushAffinityAtLeast / InteractChoice.effects / InteractEvent.mutual）
+        script1.ts       # 剧本 v7（Y1-9 ~ Y2-2，5 固定事件 + 4 随机互动，含"她"的完整分叉树）
 ```
 
 ---
 
-## 四、第 2 批已完成的能力（跑起来可验证）
+## 四、第 2.1 批已完成的能力（跑起来可验证）
 
-- ✅ 开局**选玄幻身份**（只有"龙烬余孤"一个）
-- ✅ 选完后**身份因子随机二选一**：`seal`（封龙）/ `ancient`（古龙），**玩家不可见**
-- ✅ **身份暗示句**随身份变化（"另一个心跳" vs "有什么东西在躲着你"）
-- ✅ **8 阶段月流程**：intro → mainChoice → feedback → smallEvent → fixedEvent → interact1 → interact2 → summary
-- ✅ **固定事件月**只在 9/10/11/12/1 月；2 月寒假走 `holidaySkip`，只有一个"跳过"
-- ✅ **固定事件选项按 `identityFactorIs` 分叉**（seal / ancient 各看各的选项）
-- ✅ **随机互动事件池 4 个**：`it_bench` / `it_latenight` / `it_rooftop` / `it_oldfloor`
-- ✅ **交互树完整跑**：普通 next / `{byMutual, byOneSide}` 双向分支
-- ✅ **机会池规则**：机会①可抽全部，机会②只抽 `kind: 'short'`；`maybeLong` 进入 `byMutual` 时吃满 2 次
-- ✅ **小事件概率**：base 0.4 + 主选择 +0.25 + 关系负向权重 > 正向
-- ✅ **拉近关系**：按 NPC `relation` 类型给好感 +4/+5/+8，封顶 100
-- ✅ **好感总封顶**：正向和超 100 时按比例裁剪
-- ✅ **假期跳过**
+### 1. crush（在意的人）系统
+- ✅ 开局**两步选择**：先选玄幻身份（龙烬余孤）→ 再选"在意的人"（8 个常驻 NPC 任选，含关系标签）
+- ✅ 选定后写入 `player.crushId`，关系面板显示"在意 · XX"
+- ✅ **`byMutual` 不再是抛硬币**：剧本用 `mutual: { from: 'crush', threshold: 30 }` 声明判定来源，达到阈值才走"双方主动"分支（实测 29 → false，30 → true）
+- ✅ 没有 `mutual` 规则的事件（如旧楼那扇门）才退回 0.6 随机
+
+### 2. "她"的完整分叉树（`it_latenight`）
+用户口述的结构已完整实现：
+```
+晚自习 → 去看看 → 她在？ ┬ 在 → 主动找 TA（双方主动/单方） / 看一眼就走 / 敲门（好感≥40）
+                         └ 不在 → 站一会儿/直接走 → 校门口 → 遇到？ ┬ 遇到 → 主动找 TA（双方主动/单方）/ 看一眼离开
+                                                                  └ 没遇到 → 一个人回宿舍
+```
+- ✅ 文本用 `{crush}` 占位，运行时替换成玩家选定的人名（300 局随机实测 0 次残留占位符）
+- ✅ 选项效果用 `target: '$crush'`，同一棵树套在任何 NPC 上都成立
+- ✅ 支持 `chance` 概率节点（"她在不在" 0.55、"校门口遇不遇到" 0.45）——这个 schema 之前一直没实现
+- ✅ 随机互动**选项终于能生效**：`InteractChoice.effects` 可加好感 / flag / 目标进度 / 日志
+- ✅ 进池门槛：`requires.crushAffinityAtLeast`；没选 crush 时 `it_latenight` 永不出现（实测 0 次）
+
+### 3. 两处地基修复（顺手做掉，避免新内容被污染）
+- ✅ **好感总封顶改为"只限新增"**：旧实现按比例回缩已有好感，实测"每月都拉邱同学"会出现 total 100→96、邱 33→32→29；现在只把剩余额度给新增，历史值不动（实测全程拉同一个人：0 次下降、峰值 100）
+- ✅ **同月随机互动 ①/② 去重**：旧实现 300 局里 266 局（89%）同月抽到同一个事件；现在 200 局 0 次
+- ✅ `__advance__` 兜底：任意阶段选项被条件过滤空时，"推进"按钮会真正推进阶段，不再软锁
+- ✅ 小事件"负向权重 > 正向"真正生效：学习时若在意的人好感 < 10，`p` 额外 -0.4（旧代码该分支引用了永远为 undefined 的 `bondTargetId`，是死代码）
+
+### 4. 工程门禁
+- ✅ `tsconfig.json` 补 `allowImportingTsExtensions`（`main.tsx` 引 `./App.tsx` 以前直接 TS5097）
+- ✅ `package.json` 增加 `typecheck` / `build` 脚本
+- ✅ 本批验证：`tsc --noEmit` 通过；`vite build` 通过；800+ 局引擎模拟（含 500 局随机 fuzz）0 异常
 
 ---
 
 ## 五、已知简化与未做的（下一批的活）
 
-### 1. `byMutual` 判定是假的
-**现状**：`mutual = rng.chance(0.6)`（抛硬币）。
-**应做**：引入 `crushId`（在意的人）+ 关系状态 + 好感阈值判定。
-**位置**：`RunEngine.handleInteractChoice`。
+### 1. 同框（samebox）还是空的
+`EventDef.kind` 有 `samebox`，引擎未接；`MonthDef` 里也没有同框配置。用户说过"要做，但先专注个人"，**这是第 3 批**。
 
-### 2. 用户原话的"她"分叉树还没做
-用户描述的完整树：
-```
-晚自习 → 去看她班级 → 她在？
-  ├ 在 → 主动找她 / 害羞看一眼
-  └ 不在 → 颓丧离开 → 校门口遇到？
-       ├ 遇到 → 主动找她 / 看一眼离开
-       └ 没遇到 → 结束
-```
-**现状**：`it_latenight` 只是极简占位（看一眼对面楼的灯）。
-**需补**：需要关系状态支持（她在不在、同班与否、校门口概率）。
+### 2. 世界因子（家族/旧楼/学业）未激活
+`factorPool: []`、`factorGroups: []`，`EvalContext.activeFactors` 恒为空集。按用户指示本批不做。
 
-### 3. 固定事件的选择结果日志被覆盖
-**现状**：`choose()` 固定事件分支把 `logs` 存到 `flashNarrative`，但紧接着 `toInteract1()` 会把 `flashNarrative` 覆盖成互动事件文字。
-**影响**：玩家看不到自己刚才选项的结果。
-**修法**：把 `flashNarrative` 改成"日志数组"或"logs 追加到 monthLog"，并在 narrative 里渲染完整 `monthLog`。
+### 3. 只有 6 个月，没有三年
+时间线是 Y1-9 ~ Y2-2（[script1.ts](script-br/src/game/script/script1.ts)），到寒假就 `finish()`。
+结局固定 `outcomes[0]`（"【暂时】学期未完"），`minGoalRatio` / 私人目标完成度 / 关系结局都没接。
 
-### 4. `feedback.special`（特殊关系人信息流）是空壳
-只有 `relation === '谜'` 时硬塞一句话，没有真正的"在意的人"信息。
+### 4. 8 个 NPC 只有 4 个有戏
+林老师 / 邱同学 / 月亮学姐 / 何老师 在固定事件里有互动；姚主任 / 沈星河 / 江晴 / 顾伯 目前只能靠主选项"拉近关系"碰。
+主选项一次列出 9 个按钮（学习 + 8 个 NPC），手机端要滚。
 
-### 5. 世界因子、同框、结局判定都是空的
-- `factorPool: []`、`factorGroups: []`：世界因子（家族/旧楼/学业）不激活，按用户指示**本批不做**；
-- 同框（`samebox`）：引擎未接，用户说"要做，但先专注个人"；**下一批引入**；
-- 结局：只有占位 `o_default`，判定走"私人目标完成度"的正式逻辑还没接。
+### 5. `it_bench` / `it_rooftop` / `it_oldfloor` 仍然没有状态后果
+它们没有配 `effects`（本批只给"她"的树配了）。三个事件里 `it_bench` 权重 3，独占约 43% 抽取。
 
-### 6. `it_latenight` 的 requires 是占位
-```ts
-requires: { hasCrush: false }  // 会过滤掉吗？不会——因为 hasCrush=false 是"不需要 crush"
-```
-实际上无害，但下一批真正引入 crush 后要改成 `hasCrush: true`。
+### 6. 其它 schema 空壳
+`MonthDef.stepCount` / `silentStudy`、`Role` / `identityTags` / `hasIdentity`、`evaluator` 的 `setTerminate` / custom 条件、`OutcomeDef.minGoalRatio`、`GameView` 的 `year` / `monthOfYear` / `phase` / `outcomeNarrative` —— 都还没用上。
+
+### 7. 对局不可复现、不能重开
+seed 来自 `Date.now()`（[RunEngine.ts](script-br/src/game/engine/RunEngine.ts) 构造函数），`rng.randomSeed()` 没用到；结局后没有"重新开始"，要刷新页面。
+
+### 8. 关系状态还很薄
+`RelationRuntime`（stranger/acquaintance/close/crush）没做，`sameClass` 也没数据；"她与别人走得很近"这类关系变动事件还没有，所以小事件的 -0.4 目前用"好感 < 10"代理。
 
 ---
 
 ## 六、下一批开工建议（给下一个 AI）
 
-**优先级**（用户意图排序，需再确认）：
-1. **先修 §5 的第 3 条**（logs 覆盖 bug，因为每个事件都受影响）；
-2. **接 crss 系统**：加 `crushId` 字段、加关系状态、让 `byMutual` 按好感判定；
-3. **实现"她"的完整分叉树** `it_latenight`（用户原话最重要的那个）；
-4. **然后才考虑同框**。
+**优先级**（按用户意图）：
+1. **同框（samebox）引擎**：按月/地点配置同框事件，同框即触发，别人可介入抢约（第 3 批）；
+2. **私人目标 + 双层目标**：目标进度现在只在固定事件里 +1/+2，UI 完全不显示；补目标面板与完成度；
+3. **结局判定**：三年时间线 + `outcomes` 表驱动 + 关系结局；
+4. 给 `it_bench` / `it_rooftop` / `it_oldfloor` 补效果与内容；
+5. 再往后：局外轮回存档（唯一身份 + 好感封顶分配 + 解锁带出）、联网。
 
 **验证方式**：每批做完，用户会 `cd script-br` → `npm run dev` 实际跑。
 
@@ -152,14 +163,14 @@ requires: { hasCrush: false }  // 会过滤掉吗？不会——因为 hasCrush=
 - npm 不在 PATH，必须用 `& "C:\Program Files\nodejs\npm.cmd"`
 - 不要往 `code\script-br\src\` 或 `code\src\` 写代码
 - 保存代码必须写绝对真实路径 `script-br/src/game/...`（相对项目根 `game_project`）
+- 仓库把 `node_modules` 也提交了（4897 个文件），`git status` 会很慢；`.gitignore` 目前没忽略它
 
 ---
 
 ## 七、运行状态确认
 
-**最近一次**：用户确认"能跑"，即：
-- `npm run dev` 无报错；
-- 浏览器能看到"选择你的玄幻身份 / 龙烬余孤"；
-- 8 阶段流程能走通。
-
-否则下一批从"复现问题"开始。
+**最近一次（v7）**：`tsc --noEmit` 通过、`vite build` 通过、引擎模拟 800+ 局无异常。
+浏览器侧待用户确认：
+- 开局先选身份，再选"在意的人"（8 个 NPC）；
+- 局内关系面板显示"好感 x/100 · 在意 · XX"；
+- 随机互动里会出现"晚自习 → 去看看"的完整树。

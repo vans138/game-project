@@ -1,10 +1,12 @@
-// 局内引擎 v6.2：修 logs 覆盖 bug + 修正 it_latenight 的 hasCrush 条件副作用
+// 局内引擎 v7：接 crush 系统 + "她"的完整分叉树 + 两处地基修复
 //
-// v6.2 变更：
-//   1) 所有阶段产生的日志都追加到 state.monthLog，不再依赖会被覆盖的 flashNarrative
-//   2) buildPhaseView 在每段开头渲染 monthLog（累积显示），因此选项效果一律可见
-//   3) pickInteract 对 hasCrush:true 的事件做真过滤（crushId 未定义 → 排除）
-//      本批它会被过滤掉，属于预期；crush 接入后自动生效
+// v7 变更：
+//   1) 玩家在开局选定"在意的人"（crushId），byMutual 改为按好感阈值判定（不再抛硬币）
+//   2) 随机互动支持 chance 节点（"她在不在""校门口遇不遇到"），并支持选项自带 effects
+//   3) 好感总封顶改为"只限制新增"：不再回头按比例裁剪已积累的好感
+//   4) 同月随机互动 ①/② 不重复抽同一个事件
+//   5) 任意阶段收到 __advance__ 时会推进到下一阶段，避免空选项永久卡死
+//   6) 小事件的"负向权重 > 正向"真正生效（学习时，在意的人好感过低 → -0.4）
 
 import type {
   Script,
@@ -14,6 +16,7 @@ import type {
   InteractNode,
   InteractChoice,
   IdentityFactorId,
+  Effect,
 } from '../script/types'
 import { evalCondition, applyEffects, type EvalContext } from './evaluator'
 import type { Rng } from './rng'
@@ -46,6 +49,8 @@ interface MonthRuntime {
   isEventMonth: boolean
   fixedEventId?: string
   opportunityUsed: 0 | 1 | 2
+  /** 本月已抽到过的随机互动事件 id（①/② 不再重复抽同一个） */
+  usedEventIds: string[]
 }
 
 interface InteractRuntime {
@@ -65,7 +70,6 @@ interface RunState {
   monthRuntime: MonthRuntime
   interact: InteractRuntime | null
   mainChoice?: 'study' | 'bond' | 'rest'
-  bondTargetId?: string
   feedback?: { self: string; peers: string; special?: string }
   phaseHint: string
   /** 累积日志：所有阶段产生的叙述都追加到这里，不再被覆盖 */
@@ -90,6 +94,8 @@ export interface Snapshot {
   affinityTotal: number
   affinityCap: number
   identityName: string
+  /** 开局势力的"在意的人"名字（没选则为空串） */
+  crushName: string
   isEventMonth: boolean
 }
 
@@ -101,6 +107,12 @@ function hashSeed(s: string): number {
   return h >>> 0
 }
 
+export interface RunOptions {
+  seed?: number
+  /** 开局选定的"在意的人"（npc id）；不传则该局没有 crush，相关互动不进池 */
+  crushId?: string
+}
+
 export class RunEngine {
   private state: RunState
   private script: Script
@@ -109,10 +121,10 @@ export class RunEngine {
   private lastOutcomeTitle?: string
   private lastOutcomeNarrative?: string
 
-  constructor(script: Script, identityId: string, seed?: number) {
+  constructor(script: Script, identityId: string, opts: RunOptions = {}) {
     this.script = script
     const identity = script.identities.find((i) => i.id === identityId) ?? script.identities[0]
-    this.rng = createRng(seed ?? hashSeed(identity.id + ':' + Date.now()))
+    this.rng = createRng(opts.seed ?? hashSeed(identity.id + ':' + Date.now()))
 
     const pool = identity.identityFactorPool
     const idx = this.rng.weightedIndex(pool.map(() => 1))
@@ -134,6 +146,7 @@ export class RunEngine {
         affinity,
         flags: new Set(),
         goalProgress: {},
+        crushId: opts.crushId && affinity[opts.crushId] !== undefined ? opts.crushId : undefined,
       },
       monthRuntime: {
         index: firstMonth?.index ?? 1,
@@ -141,6 +154,7 @@ export class RunEngine {
         isEventMonth: !!firstMonth?.fixedEvent,
         fixedEventId: firstMonth?.fixedEvent,
         opportunityUsed: 0,
+        usedEventIds: [],
       },
       interact: null,
       phaseHint: '',
@@ -187,7 +201,6 @@ export class RunEngine {
     this.state.month = md.month
     this.state.interact = null
     this.state.mainChoice = undefined
-    this.state.bondTargetId = undefined
     this.state.feedback = undefined
     this.state.monthLog = []
     this.state.stageNarrative = undefined
@@ -198,6 +211,7 @@ export class RunEngine {
       isEventMonth: !!md.fixedEvent,
       fixedEventId: md.fixedEvent,
       opportunityUsed: 0,
+      usedEventIds: [],
     }
 
     if (md.type === 'holiday') {
@@ -214,13 +228,9 @@ export class RunEngine {
     if (choiceId.startsWith('bond:')) {
       this.state.mainChoice = 'bond'
       const targetId = choiceId.slice('bond:'.length)
-      this.state.bondTargetId = targetId
       const npc = this.script.npcs.find((n) => n.id === targetId)
       const bump = npc?.relation === '友' ? 8 : npc?.relation === '尊' ? 5 : 4
-      const before = this.state.player.affinity[targetId] ?? 0
-      this.state.player.affinity[targetId] = before + bump
-      this.enforceAffinityCap()
-      const after = this.state.player.affinity[targetId] ?? 0
+      const gained = this.addAffinity(targetId, bump)
       this.state.feedback = {
         self:
           `你试着和${npc?.name ?? '某人'}多待了一会儿。` +
@@ -228,7 +238,11 @@ export class RunEngine {
         peers: '班里同学对此有点好奇。',
         special: npc?.relation === '谜' ? 'TA 看你的眼神，比往常多停留了一秒。' : undefined,
       }
-      this.log(`好感 · ${npc?.name ?? targetId} ${after - before >= 0 ? '+' : ''}${after - before}`)
+      this.log(
+        gained > 0
+          ? `好感 · ${npc?.name ?? targetId} +${gained}`
+          : `好感 · ${npc?.name ?? targetId} 已到总上限，这次没能再拉近`
+      )
     } else if (choiceId === 'study') {
       this.state.mainChoice = 'study'
       this.state.feedback = {
@@ -248,31 +262,65 @@ export class RunEngine {
     this.state.phaseHint = '反馈'
   }
 
-  private enforceAffinityCap() {
-    const cap = this.script.affinityCap
+  // ---------- 好感：总封顶只限制"新增"，不回头改历史 ----------
+  private positiveTotal(): number {
+    let sum = 0
+    for (const v of Object.values(this.state.player.affinity)) sum += Math.max(0, v)
+    return sum
+  }
+
+  /**
+   * 增加好感，但受"总好感封顶"约束：只把剩余额度给它，超出部分直接丢弃。
+   * 关键点：绝不按比例回缩已有好感（旧实现会让玩家越玩数值越低）。
+   * 返回实际增加的值。
+   */
+  private addAffinity(target: string, delta: number): number {
     const aff = this.state.player.affinity
-    let positiveSum = 0
-    for (const k of Object.keys(aff)) positiveSum += Math.max(0, aff[k])
-    if (positiveSum <= cap) return
-    const ratio = cap / positiveSum
+    if (delta <= 0) {
+      aff[target] = Math.max(0, (aff[target] ?? 0) + delta)
+      return delta
+    }
+    const headroom = Math.max(0, this.script.affinityCap - this.positiveTotal())
+    const gain = Math.min(delta, headroom)
+    if (gain > 0) aff[target] = (aff[target] ?? 0) + gain
+    return gain
+  }
+
+  /**
+   * 跑完 applyEffects 之后调用：把"本次新增"裁到封顶额度内。
+   * before 是结算前的好感快照，只会削减增量，不会动存量。
+   */
+  private settleAffinityGains(before: Record<string, number>) {
+    const aff = this.state.player.affinity
+    let over = this.positiveTotal() - this.script.affinityCap
+    if (over <= 0) return
     for (const k of Object.keys(aff)) {
-      if (aff[k] > 0) aff[k] = Math.floor(aff[k] * ratio)
+      if (over <= 0) break
+      const gain = aff[k] - (before[k] ?? 0)
+      if (gain <= 0) continue
+      const cut = Math.min(gain, over)
+      aff[k] -= cut
+      over -= cut
     }
   }
 
   // ---------- 小事件 ----------
+  private crushAffinity(): number {
+    const cid = this.state.player.crushId
+    if (!cid) return 0
+    return this.state.player.affinity[cid] ?? 0
+  }
+
   private rollSmallEvent(): boolean {
     const base = 0.4
     let mainBonus = 0
-    if (this.state.mainChoice === 'study') mainBonus = 0.25
-    else if (this.state.mainChoice === 'bond') mainBonus = 0.25
+    if (this.state.mainChoice === 'study' || this.state.mainChoice === 'bond') mainBonus = 0.25
 
+    // 负向权重 > 正向（硬约束）：在意的人跟你还很生疏时，学习会被分心，-0.4 > +0.25。
+    // 等"她与别人走得很近"的正式事件接入后，这里的代理条件可以替换。
     let relationMod = 0
     if (this.state.mainChoice === 'study') {
-      const tid = this.state.bondTargetId
-      const v = tid ? (this.state.player.affinity[tid] ?? 0) : 0
-      if (tid && v < 10) relationMod = -0.4
-      else relationMod = 0.01
+      relationMod = this.state.player.crushId && this.crushAffinity() < 10 ? -0.4 : 0
     } else if (this.state.mainChoice === 'bond') {
       relationMod = 0.15
     }
@@ -328,11 +376,18 @@ export class RunEngine {
   private pickInteract(mode: 'all' | 'shortOnly'): InteractEvent | null {
     const pool = this.script.interactEvents
     if (!pool.length) return null
+    const used = new Set(this.state.monthRuntime.usedEventIds)
     const filtered = pool.filter((e) => {
       if (mode === 'shortOnly' && e.kind !== 'short') return false
-      // hasCrush: true 且玩家尚未指定 crush → 过滤掉（本批预期如此）
+      // 同一个月里 ①/② 不重复抽同一个事件
+      if (used.has(e.id)) return false
+      // hasCrush: true 且玩家开局没有选定"在意的人" → 过滤掉
       if (e.requires?.hasCrush === true && !this.state.player.crushId) return false
       if (e.requires?.identityFactor && e.requires.identityFactor !== this.state.player.identityFactor) return false
+      if (e.requires?.crushAffinityAtLeast !== undefined) {
+        if (!this.state.player.crushId) return false
+        if (this.crushAffinity() < e.requires.crushAffinityAtLeast) return false
+      }
       return true
     })
     if (!filtered.length) return null
@@ -349,17 +404,54 @@ export class RunEngine {
       pendingChoices: [],
     }
     this.state.interact = rt
+    this.state.monthRuntime.usedEventIds.push(event.id)
     if (event.kind === 'long') {
       this.state.monthRuntime.opportunityUsed = 2
     } else {
       this.state.monthRuntime.opportunityUsed = isFirst ? 1 : 2
     }
-    this.state.stageNarrative = event.root.text
     this.state.phaseHint = isFirst ? '随机互动①' : '随机互动②'
-    this.refreshInteractChoices()
-    if (rt.pendingChoices.length === 0) {
-      this.finishInteract()
+    this.enterNode(event.root)
+  }
+
+  /** 把 {crush} 之类占位符换成真实文本，剧本里就不用写死某个 NPC 名字 */
+  private render(text: string): string {
+    const crushId = this.state.player.crushId
+    const crushName = crushId ? (this.script.npcs.find((n) => n.id === crushId)?.name ?? '那个人') : '那个人'
+    return text.replace(/\{crush\}/g, crushName)
+  }
+
+  /**
+   * 剧本里可以用 target: '$crush' 表示"当前的在意的人"，
+   * 这样同一棵树套在任何一个 NPC 上都成立。
+   */
+  private resolveEffects(effects: Effect[] | undefined): Effect[] {
+    if (!effects?.length) return []
+    const crushId = this.state.player.crushId
+    return effects.map((e) =>
+      e.type === 'affinity' && e.target === '$crush' && crushId ? { ...e, target: crushId } : e
+    )
+  }
+
+  /**
+   * 进入一个节点：如果是 chance 节点（无 choices 但有概率分支），先掷骰子再进入结果节点。
+   * 概率节点的文本会拼进当前正文（"她在不在"的结果要看得见），不再重复塞进月志。
+   */
+  private enterNode(node: InteractNode) {
+    const rt = this.state.interact
+    if (!rt) return
+    let cur = node
+    const parts: string[] = []
+    let guard = 0
+    while (cur.chance && !(cur.choices?.length) && guard++ < 8) {
+      if (cur.text) parts.push(this.render(cur.text))
+      cur = this.rng.chance(cur.chance.p) ? cur.chance.ifHit : cur.chance.ifMiss
     }
+    rt.node = cur
+    parts.push(this.render(cur.text))
+    this.state.stageNarrative = parts.join('\n\n')
+    this.refreshInteractChoices()
+    if (rt.pendingChoices.length === 0) this.finishInteract()
   }
 
   private refreshInteractChoices() {
@@ -367,14 +459,27 @@ export class RunEngine {
     if (!rt) return
     const choices = rt.node.choices ?? []
     rt.pendingChoices = choices
-      .map((c, i) => ({ id: `ic:${i}`, text: c.text, src: c }))
+      .map((c, i) => ({ id: `ic:${i}`, text: this.render(c.text), src: c }))
       .filter(({ src }) => {
         const r = src.requires
         if (!r) return true
         if (r.identityFactor && r.identityFactor !== this.state.player.identityFactor) return false
         if (r.hasCrush === true && !this.state.player.crushId) return false
+        if (r.crushAffinityAtLeast !== undefined) {
+          if (!this.state.player.crushId) return false
+          if (this.crushAffinity() < r.crushAffinityAtLeast) return false
+        }
         return true
       })
+  }
+
+  /** byMutual 判定：有 mutual 规则就按好感阈值，没有才退回旧的 0.6 抛硬币 */
+  private isMutual(event: InteractEvent): boolean {
+    const rule = event.mutual
+    if (!rule) return this.rng.chance(0.6)
+    const npcId = rule.from === 'crush' ? this.state.player.crushId : rule.from
+    if (!npcId) return false
+    return (this.state.player.affinity[npcId] ?? 0) >= rule.threshold
   }
 
   private handleInteractChoice(choiceId: string) {
@@ -383,8 +488,18 @@ export class RunEngine {
     const picked = rt.pendingChoices.find((c) => c.id === choiceId)
     if (!picked) return
 
-    // 玩家点了选项，先把上一个节点的文本沉淀进月志（保证可回看）
-    if (rt.node.text) this.log(rt.node.text)
+    // 月志只记"你选了什么"，节点原文留在正文区展示，避免整棵树把正文埋掉
+    this.log(`你选择：${picked.text}`)
+
+    // 选项自带的即时效果（好感/flag/目标/日志）
+    const choiceEffects = this.resolveEffects(picked.src.effects)
+    if (choiceEffects.length) {
+      const before = { ...this.state.player.affinity }
+      const ctx = this.ctx()
+      const logs = applyEffects(choiceEffects, ctx)
+      this.settleAffinityGains(before)
+      for (const l of logs) this.log(l)
+    }
 
     const nextRaw = picked.src.next
     if (!nextRaw) {
@@ -395,31 +510,23 @@ export class RunEngine {
     if (typeof (nextRaw as { byMutual?: unknown }).byMutual === 'object' &&
         typeof (nextRaw as { byOneSide?: unknown }).byOneSide === 'object') {
       const branches = nextRaw as { byMutual: InteractNode; byOneSide: InteractNode }
-      const mutual = this.rng.chance(0.6)
+      const event = this.script.interactEvents.find((e) => e.id === rt.eventId)
+      const mutual = event ? this.isMutual(event) : this.rng.chance(0.6)
       const chosen = mutual ? branches.byMutual : branches.byOneSide
-      rt.node = chosen
-      this.state.stageNarrative = chosen.text
       if (mutual && rt.kind === 'maybeLong' && !rt.becameLong) {
         rt.becameLong = true
         this.state.monthRuntime.opportunityUsed = 2
       }
-      this.refreshInteractChoices()
-      if (rt.pendingChoices.length === 0) this.finishInteract()
+      this.enterNode(chosen)
       return
     }
 
-    const nextNode = nextRaw as InteractNode
-    rt.node = nextNode
-    this.state.stageNarrative = nextNode.text
-    this.refreshInteractChoices()
-    if (rt.pendingChoices.length === 0) {
-      this.finishInteract()
-    }
+    this.enterNode(nextRaw as InteractNode)
   }
 
   private finishInteract() {
-    // 交互结束：把最后一个节点的文本也沉淀进月志
-    if (this.state.interact?.node.text) this.log(this.state.interact.node.text)
+    // 交互结束：把最后的收尾叙述沉淀进月志（中间节点的原文只留在正文区，不重复堆叠）
+    if (this.state.stageNarrative) this.log(this.state.stageNarrative)
     const used = this.state.monthRuntime.opportunityUsed
     if (used >= 2) {
       this.toSummary()
@@ -457,6 +564,7 @@ export class RunEngine {
       .sort((a, b) => b.value - a.value)
     const total = panel.reduce((s, p) => s + Math.max(0, p.value), 0)
     const identity = this.script.identities.find((i) => i.id === this.state.player.identityId)
+    const crush = this.script.npcs.find((n) => n.id === this.state.player.crushId)
 
     if (!md || this.state.finished) {
       return {
@@ -475,6 +583,7 @@ export class RunEngine {
         affinityTotal: total,
         affinityCap: this.script.affinityCap,
         identityName: identity?.name ?? '',
+        crushName: crush?.name ?? '',
         isEventMonth: this.state.monthRuntime.isEventMonth,
       }
     }
@@ -494,6 +603,7 @@ export class RunEngine {
       affinityTotal: total,
       affinityCap: this.script.affinityCap,
       identityName: identity?.name ?? '',
+      crushName: crush?.name ?? '',
       isEventMonth: this.state.monthRuntime.isEventMonth,
     }
   }
@@ -571,7 +681,7 @@ export class RunEngine {
         body += '\n（本月没有发生随机互动。）'
         return { narrative: prefix + body, choices: [{ id: 'interact_next', text: '继续' }] }
       }
-      body += '\n' + (this.state.stageNarrative ?? rt.node.text)
+      body += '\n' + (this.state.stageNarrative ?? this.render(rt.node.text))
       const choices = rt.pendingChoices.map((c) => ({ id: c.id, text: c.text }))
       if (choices.length === 0) {
         return { narrative: prefix + body, choices: [{ id: 'interact_next', text: '继续' }] }
@@ -597,9 +707,38 @@ export class RunEngine {
   }
 
   // ---------- 选择入口 ----------
+  /**
+   * UI 在没有选项时会显示一个"推进"按钮（__advance__）。
+   * 这里把它翻译成"当前阶段的默认继续动作"，避免某个阶段选项被条件过滤空后永久卡死。
+   */
+  private advancePhase() {
+    const ph = this.state.monthRuntime.phase
+    if (ph === 'holidaySkip') { this.advanceMonth(); return }
+    if (ph === 'intro') {
+      this.state.monthRuntime.phase = 'mainChoice'
+      this.state.phaseHint = '主选项'
+      return
+    }
+    if (ph === 'feedback') { this.runSmallEvent(); return }
+    if (ph === 'smallEvent') {
+      if (this.state.stageNarrative) this.log('小事件：' + this.state.stageNarrative)
+      this.state.stageNarrative = undefined
+      this.toFixedOrInteract1()
+      return
+    }
+    if (ph === 'fixedEvent') { this.toInteract1(); return }
+    if (ph === 'interact1' || ph === 'interact2') { this.finishInteract(); return }
+    if (ph === 'summary') { this.advanceMonth(); return }
+  }
+
   choose(choiceId: string): Snapshot {
     if (this.state.finished) return this.snapshot()
     const ph = this.state.monthRuntime.phase
+
+    if (choiceId === '__advance__') {
+      this.advancePhase()
+      return this.emitAndSnap()
+    }
 
     if (ph === 'holidaySkip') {
       if (choiceId === CHOICE_SKIP) this.advanceMonth()
@@ -638,12 +777,11 @@ export class RunEngine {
       const ev = this.eventById(this.state.monthRuntime.fixedEventId)
       const choice = ev?.choices.find((c) => c.id === choiceId)
       if (choice) {
+        const before = { ...this.state.player.affinity }
         const ctx = this.ctx()
-        const logs = applyEffects(choice.effects, ctx)
-        this.state.player.affinity = ctx.affinity
-        this.state.player.flags = ctx.flags
-        this.state.player.goalProgress = ctx.goalProgress
-        this.enforceAffinityCap()
+        const logs = applyEffects(this.resolveEffects(choice.effects), ctx)
+        // 封顶只裁掉本次新增，不动以前攒的
+        this.settleAffinityGains(before)
         // 记录玩家做了什么
         this.log(`固定事件 · ${ev?.title ?? ''} → ${choice.text}`)
         // 记录效果文本

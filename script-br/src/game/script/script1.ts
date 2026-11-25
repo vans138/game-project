@@ -1,7 +1,10 @@
-// 第一份剧本（v6.2）：青川中学 · Y1 上学期 + 寒假（Y1-9 ~ Y2-2）
-// 相对 v6.1 的变更：
-//   - it_latenight 的 requires 由 hasCrush:false 改为 hasCrush:true（语义正确）
-//   - 现在 crush 未接入，pickInteract 会过滤掉它（预期行为，本批看不到它）
+// 第一份剧本（v7）：青川中学 · Y1 上学期 + 寒假
+// 相对 v6.2 的变更：
+//   1) NPC 增加 power（战力）
+//   2) IdentityDef 增加 basePower（玩家初始战力）
+//   3) 新增湖面事件 it_lake_dragon（必遇一次性、高优先级、封龙/古龙文案分叉）
+//   4) 新增线索定义 clues（「失控？」多阶段）
+//   5) 新增失控事件 it_out_of_control（占位，由 RunEngine 强制指定）
 
 import type {
   Script,
@@ -11,6 +14,7 @@ import type {
   IdentityDef,
   EventDef,
   InteractEvent,
+  ClueDef,
 } from './types'
 
 const identities: IdentityDef[] = [
@@ -19,6 +23,7 @@ const identities: IdentityDef[] = [
     name: '龙烬余孤',
     desc: '世间最后一条血脉驳杂的龙。你不知道自己是被封印的容器，还是被封印者本身。',
     identityFactorPool: ['seal', 'ancient'],
+    basePower: 60,
   },
 ]
 
@@ -160,7 +165,81 @@ const events: EventDef[] = [
   },
 ]
 
+const clues: ClueDef[] = [
+  {
+    id: 'clue_out_of_control',
+    title: '失控？',
+    fromEventId: 'it_lake_dragon',
+    stages: [
+      {
+        title: '第一印象',
+        text: '湖面下的那条龙冲向你的前一秒，你什么都不记得了。\n你只记得醒来时，掌心有一道还没愈合的痕。',
+      },
+      {
+        title: '推敲',
+        text: '你回想那一刻——不是它冲向了你，而是你身上有什么东西，先一步被它勾了起来。\n你开始怀疑：那一刻失控的，也许不是它。',
+      },
+      {
+        title: '确认',
+        text: '你在旧楼镜子里试着重复那次的感觉。镜中的你，瞳孔变成了竖的，维持了很短的一瞬。\n你知道：你体内确实有东西能被勾出来。问题只是——它是你，还是不是你。',
+      },
+    ],
+  },
+]
+
 const interactEvents: InteractEvent[] = [
+  {
+    // 湖面事件：必遇、一次性、高优先级。
+    // 封龙 / 古龙都触发，但看到的龙不同（封龙：龙身有锁链；古龙：无锁链）。
+    // 结束留线索「失控？」。
+    id: 'it_lake_dragon', kind: 'maybeLong', weight: 10,
+    onceGuaranteed: true, priority: 100,
+    root: {
+      text:
+        '某个放学后的傍晚，你没有直接回家。\n' +
+        '穿过教学楼后的小路时，你发现自己站在一片从没见过的湖面前——水面静得像镜子，看得见自己的影子。\n' +
+        '湖面中央，倒影的下方，隐约有一条龙形的东西在游动。它抬起了头，和湖面上的你对视。',
+      choices: [
+        {
+          text: '开口问它：你是什么？',
+          next: {
+            // 用 {byMutual, byOneSide} 复用：这里借它做"古龙/封龙"的视觉分叉，
+            // 判定函数在 RunEngine 里被特判（见 handleInteractChoice 的 lakeDragon 分支）
+            byMutual: {
+              text:
+                '古龙没有回答。它只是静静看着你，鳞片是淬过火的暗金色，没有锁链——从头到尾，一截都没有。\n' +
+                '然后它突然朝你冲了上来。',
+              gainClue: 'clue_out_of_control',
+            },
+            byOneSide: {
+              text:
+                '古龙没有回答。它缓缓游动，你才看清：它的龙身上缠满了一道又一道锈色的锁链。\n' +
+                '它在锁链里挣扎了一下，然后突然朝你冲了上来。',
+              gainClue: 'clue_out_of_control',
+            },
+          },
+        },
+        {
+          text: '不发问，只是和它对视',
+          next: {
+            byMutual: {
+              text:
+                '你什么都没说。湖面下的古龙也没有。\n没有锁链的它，安静地游了一圈，然后慢慢沉入更深处，像什么都没发生。',
+            },
+            byOneSide: {
+              text:
+                '你什么都没说。湖面下的古龙也没有。\n被锁链捆住的它试着抬了一下头，没能抬起来，沉回去了。',
+            },
+          },
+        },
+        {
+          text: '转身离开',
+          next: { text: '你转过身。身后的湖面，安静得像从来没有过。' },
+        },
+      ],
+    },
+  },
+
   {
     id: 'it_bench', kind: 'short', weight: 3,
     root: {
@@ -172,9 +251,6 @@ const interactEvents: InteractEvent[] = [
     },
   },
 
-  // it_latenight：保留完整的 maybeLong 形态。
-  // requires.hasCrush = true → 本批（无 crush）会被 pickInteract 过滤掉，预期。
-  // 下一批接入 crush 后，玩家选定「在意的人」时，它会自动进入池子。
   {
     id: 'it_latenight', kind: 'maybeLong', weight: 4,
     requires: { hasCrush: true },
@@ -227,6 +303,20 @@ const interactEvents: InteractEvent[] = [
       ],
     },
   },
+
+  {
+    // 失控事件：本批不参与常规抽取（weight=0），由 RunEngine 在检测到敌意时强制指定。
+    id: 'it_out_of_control', kind: 'short', weight: 0,
+    root: {
+      text: '这个月的某种东西，终于压不住了。\n等你回过神来，已经站在那个人面前。',
+      choices: [
+        {
+          text: '“别再靠近我。”',
+          next: { text: '话没说完，事情就已经发生了。' },
+        },
+      ],
+    },
+  },
 ]
 
 export const SCRIPT_1: Script = {
@@ -235,14 +325,14 @@ export const SCRIPT_1: Script = {
   identities,
   roles: [],
   npcs: [
-    { id: 'npc_lin',   name: '林老师',   type: 'resident', personality: '严肃公正', affinityStart: 10, persistAcrossRuns: true, place: '教学楼', relation: '尊' },
-    { id: 'npc_qiu',   name: '邱同学',   type: 'resident', personality: '热心八卦', affinityStart: 20, persistAcrossRuns: true, place: '教室',   relation: '友' },
-    { id: 'npc_moon',  name: '月亮学姐', type: 'resident', personality: '神神秘秘', affinityStart: 0,  persistAcrossRuns: true, place: '旧楼',   relation: '谜' },
-    { id: 'npc_yao',   name: '姚主任',   type: 'resident', personality: '刻板严厉', affinityStart: 0,  persistAcrossRuns: true, place: '办公室', relation: '敌' },
-    { id: 'npc_shen',  name: '沈星河',   type: 'resident', personality: '冷淡学霸', affinityStart: 5,  persistAcrossRuns: true, place: '图书馆', relation: '友' },
-    { id: 'npc_jiang', name: '江晴',     type: 'resident', personality: '开朗体委', affinityStart: 10, persistAcrossRuns: true, place: '操场',   relation: '友' },
-    { id: 'npc_he',    name: '何老师',   type: 'resident', personality: '温和心理', affinityStart: 15, persistAcrossRuns: true, place: '办公室', relation: '尊' },
-    { id: 'npc_gu',    name: '顾伯',     type: 'resident', personality: '沉默校工', affinityStart: 5,  persistAcrossRuns: true, place: '旧楼',   relation: '谜' },
+    { id: 'npc_lin',   name: '林老师',   type: 'resident', personality: '严肃公正', affinityStart: 10, persistAcrossRuns: true, place: '教学楼', relation: '尊', power: 40 },
+    { id: 'npc_qiu',   name: '邱同学',   type: 'resident', personality: '热心八卦', affinityStart: 20, persistAcrossRuns: true, place: '教室',   relation: '友', power: 25 },
+    { id: 'npc_moon',  name: '月亮学姐', type: 'resident', personality: '神神秘秘', affinityStart: 0,  persistAcrossRuns: true, place: '旧楼',   relation: '谜', power: 55 },
+    { id: 'npc_yao',   name: '姚主任',   type: 'resident', personality: '刻板严厉', affinityStart: 0,  persistAcrossRuns: true, place: '办公室', relation: '敌', power: 30 },
+    { id: 'npc_shen',  name: '沈星河',   type: 'resident', personality: '冷淡学霸', affinityStart: 5,  persistAcrossRuns: true, place: '图书馆', relation: '友', power: 35 },
+    { id: 'npc_jiang', name: '江晴',     type: 'resident', personality: '开朗体委', affinityStart: 10, persistAcrossRuns: true, place: '操场',   relation: '友', power: 45 },
+    { id: 'npc_he',    name: '何老师',   type: 'resident', personality: '温和心理', affinityStart: 15, persistAcrossRuns: true, place: '办公室', relation: '尊', power: 30 },
+    { id: 'npc_gu',    name: '顾伯',     type: 'resident', personality: '沉默校工', affinityStart: 5,  persistAcrossRuns: true, place: '旧楼',   relation: '谜', power: 70 },
   ],
   goals: [
     { id: 'g_truth', title: '揭开轮回真相',     target: 8 },
@@ -252,6 +342,7 @@ export const SCRIPT_1: Script = {
   timeline: buildTimeline(),
   events,
   interactEvents,
+  clues,
   outcomes: [
     { id: 'o_default', title: '【暂时】学期未完', narrative: '这一段结束了。', minGoalRatio: 0 },
   ],

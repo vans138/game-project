@@ -27,6 +27,7 @@ export default function GameScreen({ source }: { source: GameSource }) {
       {showPanel && (
         <div className="g-panel">
           <div className="g-panel-head">好感 {view.affinityTotal}/{view.affinityCap}</div>
+          {view.crushName && <div className="g-panel-crush">在意 · {view.crushName}</div>}
           {view.affinity.length === 0 && <div className="g-panel-empty">暂无</div>}
           {view.affinity.map((a) => (
             <div key={a.name} className="g-panel-row">

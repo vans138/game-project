@@ -87,5 +87,6 @@ html, body, #root {
   font-size: clamp(12px, 3vw, 14px);
 }
 .g-panel-head { font-weight: 600; margin-bottom: 6px; color: #f2e8c8; }
+.g-panel-crush { opacity: 0.85; margin-bottom: 6px; color: #b8d4ff; }
 .g-panel-empty { opacity: 0.6; }
 .g-panel-row { display: flex; justify-content: space-between; gap: 16px; padding: 2px 0; }
