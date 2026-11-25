@@ -1,5 +1,5 @@
 // GameSource 单机实现：选角 → 启动 RunEngine → 转 GameView。
-// v4：透传 activeFactors；一局固定 seed（存 localStorage 便于复现）。
+// v4.3：透传 clues。
 
 import type { GameSource, GameView } from './GameView'
 import { SCRIPT_1 } from './script/script1'
@@ -37,6 +37,7 @@ function toView(s: Snapshot): GameView {
     affinityTotal: s.affinityTotal,
     affinityCap: s.affinityCap,
     activeFactors: s.activeFactors,
+    clues: s.clues,
   }
 }
 
@@ -46,7 +47,6 @@ export function createLocalSource(): GameSource {
   const listeners = new Set<(view: GameView) => void>()
 
   function startWithRole(role: Role) {
-    // 一局固定 seed：首次生成后落 localStorage，刷新页面同一局仍可复现。
     let seed: number | undefined
     try {
       const stored = localStorage.getItem(SEED_KEY)
@@ -55,9 +55,7 @@ export function createLocalSource(): GameSource {
         seed = (Math.random() * 0xffffffff) >>> 0
         localStorage.setItem(SEED_KEY, String(seed))
       }
-    } catch {
-      // 隐私模式/无 localStorage：退化为纯运行时 seed
-    }
+    } catch {}
 
     engine = new RunEngine(SCRIPT_1, role, seed)
     lastSnap = engine.snapshot()
@@ -84,6 +82,7 @@ export function createLocalSource(): GameSource {
       affinityTotal: 0,
       affinityCap: SCRIPT_1.affinityCap,
       activeFactors: [],
+      clues: [],
     }
   }
 

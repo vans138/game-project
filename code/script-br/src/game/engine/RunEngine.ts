@@ -1,12 +1,15 @@
-// 局内引擎。v4.2：
-//   - 修：本月内已播事件不重复抽（usedEventIds）
-//   - 修：advance 兜底逻辑更清晰；空事件不再需要 UI 给"推进"按钮
-//   - next 强制转移时保留进入链的叙述
+// 局内引擎 v4.3：种子 RNG / 因子演化（含终结覆盖）/ 上学月投影线索 / 假期调查线索。
+// 关键点：
+//   - 终结覆盖表 terminateOverride 由 setTerminate effect 改写
+//   - 上学月每月进入自动尝试投影一条线索
+//   - 假期月额外给"调查线索"入口（不消耗 stepCount 的步，直接改线索深度）
+//   - Snapshot 暴露线索面板数据
 
-import type { Script, Role, EventDef, MonthDef } from '../script/types'
+import type { Script, Role, EventDef, MonthDef, Clue } from '../script/types'
 import { evalCondition, applyEffects, type EvalContext } from './evaluator'
 import { createRng, type Rng } from './rng'
-import { evolveFactors } from './factorEvolve'
+import { evolveFactors, type TerminateOverride } from './factorEvolve'
+import { pickProjection, investigateOnce, type ClueRuntime } from './clueTracker'
 
 interface PlayerRuntime {
   roleId: string
@@ -19,7 +22,6 @@ interface PlayerRuntime {
 interface MonthRuntime {
   currentEventId: string
   usedSteps: number
-  /** 本月已播过的事件 id，避免同月重复 */
   usedEventIds: Set<string>
 }
 
@@ -29,9 +31,19 @@ interface RunState {
   month: number
   player: PlayerRuntime
   activeFactors: Set<string>
+  terminateOverride: TerminateOverride
+  cluesPool: Record<string, ClueRuntime>
   monthRuntime: MonthRuntime | null
   finished: boolean
   narrative: string
+}
+
+export interface ClueView {
+  clueId: string
+  text: string
+  conflictTitle: string
+  remaining: number
+  totalDepth: number
 }
 
 export interface Snapshot {
@@ -47,16 +59,15 @@ export interface Snapshot {
   affinityTotal: number
   affinityCap: number
   activeFactors: { id: string; title: string }[]
+  clues: ClueView[]
 }
 
 export const ADVANCE = '__advance__'
+export const INVESTIGATE_PREFIX = 'investigate:'
 
 function hashSeed(s: string): number {
   let h = 2166136261 >>> 0
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, 16777619) >>> 0
-  }
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0 }
   return h >>> 0
 }
 
@@ -68,15 +79,17 @@ export class RunEngine {
   private lastOutcomeNarrative?: string
   private rng: Rng
   private choicesCache: { id: string; text: string }[] = []
+  private clueById: Map<string, Clue>
 
   constructor(script: Script, role: Role, seed?: number) {
     this.script = script
     this.rng = createRng(seed ?? hashSeed(role.id + ':' + Date.now()))
+    this.clueById = new Map(script.clues.map((c) => [c.id, c]))
 
     const affinity: Record<string, number> = {}
     for (const npc of script.npcs) affinity[npc.id] = npc.affinityStart
 
-    const openingEvolve = evolveFactors(script.factorGroups, new Set(), this.rng, true)
+    const openingEvolve = evolveFactors(script.factorGroups, new Set(), this.rng, { isOpening: true })
 
     this.state = {
       monthIndex: 1,
@@ -86,6 +99,8 @@ export class RunEngine {
       monthRuntime: null,
       narrative: '',
       activeFactors: openingEvolve.active,
+      terminateOverride: {},
+      cluesPool: {},
       player: {
         roleId: role.id,
         identityTags: new Set(role.identityTags),
@@ -112,61 +127,67 @@ export class RunEngine {
   private role(): Role {
     return this.script.roles.find((r) => r.id === this.state.player.roleId)!
   }
-
   private monthDef(): MonthDef | undefined {
     return this.script.timeline.find((m) => m.index === this.state.monthIndex)
   }
-
   private eventById(id: string | undefined): EventDef | undefined {
     if (!id) return undefined
     return this.script.events.find((e) => e.id === id)
   }
 
-  /** 从本月随机池中按 season 过滤 + 排除已播 + weight 加权抽 */
   private pickFromPool(md: MonthDef, exclude: Set<string>): string | undefined {
     const pool = md.randomPool ?? []
-    const type = md.type
     const candidates: EventDef[] = []
     for (const id of pool) {
       if (exclude.has(id)) continue
       const ev = this.eventById(id)
       if (!ev) continue
-      if (ev.season === 'both' || ev.season === type) candidates.push(ev)
+      if (ev.season === 'both' || ev.season === md.type) candidates.push(ev)
     }
     if (candidates.length === 0) return undefined
-    const weights = candidates.map((c) => c.weight ?? 1)
-    const idx = this.rng.weightedIndex(weights)
+    const idx = this.rng.weightedIndex(candidates.map((c) => c.weight ?? 1))
     return idx >= 0 ? candidates[idx].id : undefined
+  }
+
+  private tryProjectClue() {
+    const md = this.monthDef()
+    if (!md || md.type !== 'school') return
+    const used = new Set(Object.keys(this.state.cluesPool))
+    const pick = pickProjection(this.script.clues, this.state.activeFactors, used)
+    if (!pick) return
+    this.state.cluesPool[pick.id] = {
+      clueId: pick.id,
+      projectedMonth: md.index,
+      remaining: pick.depth,
+      investigatedSteps: 0,
+    }
   }
 
   private enterMonth(monthIndex: number, skipEvolve = false) {
     const md = this.script.timeline.find((m) => m.index === monthIndex)
-    if (!md) {
-      this.finish()
-      return
-    }
+    if (!md) { this.finish(); return }
+
     this.state.monthIndex = monthIndex
     this.state.year = md.year
     this.state.month = md.month
-    this.state.monthRuntime = {
-      currentEventId: '',
-      usedSteps: 0,
-      usedEventIds: new Set(),
-    }
+    this.state.monthRuntime = { currentEventId: '', usedSteps: 0, usedEventIds: new Set() }
 
     if (!skipEvolve) {
-      const evo = evolveFactors(this.script.factorGroups, this.state.activeFactors, this.rng, false)
+      const evo = evolveFactors(this.script.factorGroups, this.state.activeFactors, this.rng, {
+        terminateOverride: this.state.terminateOverride,
+      })
       this.state.activeFactors = evo.active
     }
 
+    this.tryProjectClue()
     this.renderCurrentStep()
   }
 
   private renderCurrentStep() {
     const md = this.monthDef()
     if (!md || !this.state.monthRuntime) return
-
     const rt = this.state.monthRuntime
+
     let evId: string | undefined
     if (rt.usedSteps === 0 && md.fixedEvent && !rt.usedEventIds.has(md.fixedEvent)) {
       evId = md.fixedEvent
@@ -184,9 +205,18 @@ export class RunEngine {
       .filter((f) => this.state.activeFactors.has(f.id))
       .map((f) => f.title)
     if (activeTitles.length) head.push(`〔世界因子〕${activeTitles.join(' / ')}`)
-    let narrative = head.join('\n') + '\n\n'
 
+    const clueItems = this.clueViews()
+    if (clueItems.length) {
+      head.push(`〔线索〕`)
+      for (const c of clueItems.slice(0, 3)) {
+        head.push(`· ${c.text}（深度 ${c.remaining}/${c.totalDepth}）`)
+      }
+    }
+
+    let narrative = head.join('\n') + '\n\n'
     let choices: { id: string; text: string }[] = []
+
     if (ev) {
       narrative += `【${ev.title}】\n${ev.narrative}`
       const ctxCopy = this.ctx()
@@ -194,12 +224,34 @@ export class RunEngine {
         .filter((c) => evalCondition(c.require, ctxCopy))
         .map((c) => ({ id: c.id, text: c.text }))
     } else {
-      // 池子空了或全被排除了：给一句平静叙述，同时给一个"继续"伪选项
       narrative += '这个月的余下时间平静地过去了。'
       choices = [{ id: ADVANCE, text: '（继续）' }]
     }
+
+    // 假期：附上"调查线索"入口
+    if (md.type === 'holiday') {
+      const open = clueItems.filter((c) => c.remaining > 0)
+      for (const c of open.slice(0, 2)) {
+        choices.push({ id: `${INVESTIGATE_PREFIX}${c.clueId}`, text: `【调查】${c.text}` })
+      }
+    }
+
     this.state.narrative = narrative
     this.choicesCache = choices
+  }
+
+  private clueViews(): ClueView[] {
+    return Object.values(this.state.cluesPool).map((rt) => {
+      const clue = this.clueById.get(rt.clueId)!
+      const conflict = this.script.conflicts.find((cf) => cf.id === clue.conflictId)
+      return {
+        clueId: rt.clueId,
+        text: clue.text,
+        conflictTitle: conflict?.title ?? '',
+        remaining: rt.remaining,
+        totalDepth: clue.depth,
+      }
+    })
   }
 
   snapshot(): Snapshot {
@@ -211,6 +263,7 @@ export class RunEngine {
     const activeFactorList = this.script.factorPool
       .filter((f) => this.state.activeFactors.has(f.id))
       .map((f) => ({ id: f.id, title: f.title }))
+    const clues = this.clueViews()
 
     if (this.state.finished || !md) {
       return {
@@ -226,6 +279,7 @@ export class RunEngine {
         affinityTotal: total,
         affinityCap: this.script.affinityCap,
         activeFactors: activeFactorList,
+        clues,
       }
     }
 
@@ -240,15 +294,42 @@ export class RunEngine {
       affinityTotal: total,
       affinityCap: this.script.affinityCap,
       activeFactors: activeFactorList,
+      clues,
     }
   }
 
   choose(choiceId: string): Snapshot {
     if (this.state.finished) return this.snapshot()
+
+    // 调查线索：不消耗 stepCount，直接推进线索深度，并保留在当前月
+    if (choiceId.startsWith(INVESTIGATE_PREFIX)) {
+      const clueId = choiceId.slice(INVESTIGATE_PREFIX.length)
+      const rt = this.state.cluesPool[clueId]
+      if (rt) {
+        const done = investigateOnce(rt)
+        const clue = this.clueById.get(clueId)
+        let logLine = `【调查】${clue?.text ?? ''}\n`
+        if (done) {
+          logLine += '→ 你看清了这条线索指向的真相。'
+          // 读清线索也给一点目标进度（真相关）
+          this.state.player.goalProgress['g_truth'] =
+            (this.state.player.goalProgress['g_truth'] ?? 0) + 1
+        } else {
+          logLine += `→ 还差 ${rt.remaining} 步清晰。`
+        }
+        this.state.narrative = logLine + '\n\n' + this.state.narrative
+        // 重新渲染当前步以刷新线索文案
+        this.renderCurrentStep()
+        const s = this.snapshot()
+        this.emit(s)
+        return s
+      }
+      return this.snapshot()
+    }
+
     const rt = this.state.monthRuntime
     const ev = this.eventById(rt?.currentEventId)
 
-    // 没有真实事件（平静月 / 池子空）：ADVANCE 或任意点击都算占一步
     if (!ev) {
       this.consumeStep([])
       const s = this.snapshot()
@@ -259,8 +340,17 @@ export class RunEngine {
     const choice = ev.choices.find((c) => c.id === choiceId)
     if (!choice) return this.snapshot()
 
+    // 处理 setTerminate（需在 applyEffects 之前拦截，因为不是 EvalContext 里的字段）
+    const logs: string[] = []
+    for (const ef of choice.effects) {
+      if (ef.type === 'setTerminate') {
+        this.state.terminateOverride[ef.groupId] = ef.value
+      }
+    }
+
     const ctx = this.ctx()
-    const logs = applyEffects(choice.effects, ctx)
+    // applyEffects 会忽略 setTerminate（default 分支），这里只处理其余 effect
+    logs.push(...applyEffects(choice.effects, ctx))
     this.enforceAffinityCap(ctx.affinity)
 
     this.state.player.identityTags = ctx.identityTags
@@ -275,10 +365,6 @@ export class RunEngine {
     return s
   }
 
-  /**
-   * 消耗一步。nextEventId 提供时，进入该事件继续本步（不计步），
-   * 否则 usedSteps++，走满 stepCount 进入下月。
-   */
   private consumeStep(logs: string[] = [], nextEventId?: string) {
     const md = this.monthDef()
     const rt = this.state.monthRuntime
@@ -292,11 +378,10 @@ export class RunEngine {
         rt.currentEventId = nextEv.id
         rt.usedEventIds.add(nextEv.id)
         const ctxCopy = this.ctx()
-        const choices = nextEv.choices
+        this.choicesCache = nextEv.choices
           .filter((c) => evalCondition(c.require, ctxCopy))
           .map((c) => ({ id: c.id, text: c.text }))
         this.state.narrative = logLine + `【${nextEv.title}】\n${nextEv.narrative}`
-        this.choicesCache = choices
         return
       }
     }
@@ -314,10 +399,10 @@ export class RunEngine {
 
   private enforceAffinityCap(aff: Record<string, number>) {
     const cap = this.script.affinityCap
-    let positiveSum = 0
-    for (const k of Object.keys(aff)) positiveSum += Math.max(0, aff[k])
-    if (positiveSum <= cap) return
-    const ratio = cap / positiveSum
+    let pos = 0
+    for (const k of Object.keys(aff)) pos += Math.max(0, aff[k])
+    if (pos <= cap) return
+    const ratio = cap / pos
     for (const k of Object.keys(aff)) {
       if (aff[k] > 0) aff[k] = Math.floor(aff[k] * ratio)
     }
@@ -335,7 +420,6 @@ export class RunEngine {
       this.state.narrative = this.lastOutcomeNarrative
       return
     }
-
     const progress = this.state.player.goalProgress[goal.id] ?? 0
     const ratio = Math.min(1, progress / goal.target)
 
@@ -349,7 +433,6 @@ export class RunEngine {
         return
       }
     }
-
     this.lastOutcomeTitle = '【平淡】毕业'
     this.lastOutcomeNarrative = '你走完了三年。'
     this.state.narrative = this.lastOutcomeNarrative

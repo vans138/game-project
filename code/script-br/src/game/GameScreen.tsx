@@ -1,5 +1,5 @@
-// UI：背景 + 月数 + 选项 + 下方文本框；右上角关系面板；左上角世界因子面板。
-// v4.2：移除"推进到下一月"按钮（引擎自动推进；空步由引擎给"（继续）"伪选项）。
+// UI：背景 + 月数 + 选项 + 下方文本框；右上关系、左上因子、线索面板（独立按钮）。
+// v4.3：加线索面板（显示线索文本 + 深度），推进由引擎自动处理。
 
 import { useEffect, useRef, useState } from 'react'
 import type { GameSource, GameView } from './GameView'
@@ -9,6 +9,7 @@ export default function GameScreen({ source }: { source: GameSource }) {
   const [view, setView] = useState<GameView>(() => source.getView())
   const [showPanel, setShowPanel] = useState(false)
   const [showFactors, setShowFactors] = useState(false)
+  const [showClues, setShowClues] = useState(false)
   const textRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => source.subscribe(setView), [source])
@@ -27,14 +28,10 @@ export default function GameScreen({ source }: { source: GameSource }) {
       )}
       {showPanel && (
         <div className="g-panel">
-          <div className="g-panel-head">
-            好感 {view.affinityTotal}/{view.affinityCap}
-          </div>
+          <div className="g-panel-head">好感 {view.affinityTotal}/{view.affinityCap}</div>
           {view.affinity.length === 0 && <div className="g-panel-empty">暂无</div>}
           {view.affinity.map((a) => (
-            <div key={a.name} className="g-panel-row">
-              <span>{a.name}</span><span>{a.value}</span>
-            </div>
+            <div key={a.name} className="g-panel-row"><span>{a.name}</span><span>{a.value}</span></div>
           ))}
         </div>
       )}
@@ -54,15 +51,31 @@ export default function GameScreen({ source }: { source: GameSource }) {
         </>
       )}
 
+      {view.clues.length > 0 && (
+        <>
+          <button className="g-clues-toggle" onClick={() => setShowClues((v) => !v)}>
+            {showClues ? '线索 ×' : `线索 ${view.clues.length}`}
+          </button>
+          {showClues && (
+            <div className="g-clues">
+              {view.clues.map((c) => (
+                <div key={c.clueId} className="g-clues-row">
+                  <div className="g-clues-text">{c.text}</div>
+                  <div className="g-clues-meta">{c.conflictTitle} · 深度 {c.remaining}/{c.totalDepth}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
       <div className="g-middle">
         {view.month > 0 && <div className="g-month" aria-label="回合数">{view.month}</div>}
-
         {view.finished && (
           <div className="g-outcome">
             <div className="g-outcome-title">{view.outcomeTitle ?? '结局'}</div>
           </div>
         )}
-
         <div className="g-choices">
           {view.choices.map((c) => (
             <button key={c.id} className="g-choice" onClick={() => onChoose(c.id)}>{c.text}</button>
