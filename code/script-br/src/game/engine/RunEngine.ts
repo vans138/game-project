@@ -1,12 +1,7 @@
-// 局内引擎：月推进、月内多步、事件加权抽取、因子演化、结局判定。
-// v4：种子 RNG 驱动；开局抽因子；按月 stepCount 多步；season 过滤池；
-//     事件按 weight 加权抽；好感总封顶；未来组触发后 owner off。
-//
-// 月内多步模型（统一规则）：
-//   - 有 fixedEvent 的月份：第 1 步是 fixedEvent，余下 stepCount-1 步从池中加权抽。
-//   - 无 fixedEvent 的月份：逐步从池中加权抽。
-//   - 每一步都渲染一个"当前事件"，玩家选择后消耗该步。
-//   - 当本月步数用完，进入下月；若当前是结尾月（录取月），结算结局。
+// 局内引擎。v4.2：
+//   - 修：本月内已播事件不重复抽（usedEventIds）
+//   - 修：advance 兜底逻辑更清晰；空事件不再需要 UI 给"推进"按钮
+//   - next 强制转移时保留进入链的叙述
 
 import type { Script, Role, EventDef, MonthDef } from '../script/types'
 import { evalCondition, applyEffects, type EvalContext } from './evaluator'
@@ -24,6 +19,8 @@ interface PlayerRuntime {
 interface MonthRuntime {
   currentEventId: string
   usedSteps: number
+  /** 本月已播过的事件 id，避免同月重复 */
+  usedEventIds: Set<string>
 }
 
 interface RunState {
@@ -54,7 +51,6 @@ export interface Snapshot {
 
 export const ADVANCE = '__advance__'
 
-/** 简单字符串哈希，作为默认种子 */
 function hashSeed(s: string): number {
   let h = 2166136261 >>> 0
   for (let i = 0; i < s.length; i++) {
@@ -80,7 +76,6 @@ export class RunEngine {
     const affinity: Record<string, number> = {}
     for (const npc of script.npcs) affinity[npc.id] = npc.affinityStart
 
-    // 开局抽因子（isOpening=true）
     const openingEvolve = evolveFactors(script.factorGroups, new Set(), this.rng, true)
 
     this.state = {
@@ -102,8 +97,6 @@ export class RunEngine {
 
     this.enterMonth(this.state.monthIndex, /* skipEvolve */ true)
   }
-
-  // ---------- 上下文 ----------
 
   private ctx(): EvalContext {
     return {
@@ -129,13 +122,13 @@ export class RunEngine {
     return this.script.events.find((e) => e.id === id)
   }
 
-  // ---------- 抽取 ----------
-
-  private pickFromPool(md: MonthDef): string | undefined {
+  /** 从本月随机池中按 season 过滤 + 排除已播 + weight 加权抽 */
+  private pickFromPool(md: MonthDef, exclude: Set<string>): string | undefined {
     const pool = md.randomPool ?? []
     const type = md.type
     const candidates: EventDef[] = []
     for (const id of pool) {
+      if (exclude.has(id)) continue
       const ev = this.eventById(id)
       if (!ev) continue
       if (ev.season === 'both' || ev.season === type) candidates.push(ev)
@@ -146,8 +139,6 @@ export class RunEngine {
     return idx >= 0 ? candidates[idx].id : undefined
   }
 
-  // ---------- 月份推进 ----------
-
   private enterMonth(monthIndex: number, skipEvolve = false) {
     const md = this.script.timeline.find((m) => m.index === monthIndex)
     if (!md) {
@@ -157,9 +148,12 @@ export class RunEngine {
     this.state.monthIndex = monthIndex
     this.state.year = md.year
     this.state.month = md.month
-    this.state.monthRuntime = { currentEventId: '', usedSteps: 0 }
+    this.state.monthRuntime = {
+      currentEventId: '',
+      usedSteps: 0,
+      usedEventIds: new Set(),
+    }
 
-    // 除开局外，进入新月份时做一次因子演化
     if (!skipEvolve) {
       const evo = evolveFactors(this.script.factorGroups, this.state.activeFactors, this.rng, false)
       this.state.activeFactors = evo.active
@@ -174,12 +168,13 @@ export class RunEngine {
 
     const rt = this.state.monthRuntime
     let evId: string | undefined
-    if (rt.usedSteps === 0 && md.fixedEvent) {
+    if (rt.usedSteps === 0 && md.fixedEvent && !rt.usedEventIds.has(md.fixedEvent)) {
       evId = md.fixedEvent
     } else {
-      evId = this.pickFromPool(md)
+      evId = this.pickFromPool(md, rt.usedEventIds)
     }
     rt.currentEventId = evId ?? ''
+    if (evId) rt.usedEventIds.add(evId)
 
     const ev = this.eventById(rt.currentEventId)
     const role = this.role()
@@ -199,13 +194,13 @@ export class RunEngine {
         .filter((c) => evalCondition(c.require, ctxCopy))
         .map((c) => ({ id: c.id, text: c.text }))
     } else {
-      narrative += '这个月平静地过去了，教室里只有粉笔的声音。'
+      // 池子空了或全被排除了：给一句平静叙述，同时给一个"继续"伪选项
+      narrative += '这个月的余下时间平静地过去了。'
+      choices = [{ id: ADVANCE, text: '（继续）' }]
     }
     this.state.narrative = narrative
     this.choicesCache = choices
   }
-
-  // ---------- 快照 ----------
 
   snapshot(): Snapshot {
     const md = this.monthDef()
@@ -248,16 +243,14 @@ export class RunEngine {
     }
   }
 
-  // ---------- 选择 ----------
-
   choose(choiceId: string): Snapshot {
     if (this.state.finished) return this.snapshot()
     const rt = this.state.monthRuntime
     const ev = this.eventById(rt?.currentEventId)
 
+    // 没有真实事件（平静月 / 池子空）：ADVANCE 或任意点击都算占一步
     if (!ev) {
-      // 平静月：随便点一下就占一步
-      this.consumeStep(false)
+      this.consumeStep([])
       const s = this.snapshot()
       this.emit(s)
       return s
@@ -275,8 +268,7 @@ export class RunEngine {
     this.state.player.flags = ctx.flags
     this.state.player.goalProgress = ctx.goalProgress
 
-    // 如果选项带了 next，按强制转移处理（下一步直接进入该事件）
-    this.consumeStep(true, logs, choice.next ?? undefined)
+    this.consumeStep(logs, choice.next ?? undefined)
 
     const s = this.snapshot()
     this.emit(s)
@@ -284,28 +276,26 @@ export class RunEngine {
   }
 
   /**
-   * 消耗一步。usedSteps++；若本月步数用完则推入下月；
-   * 若 nextEventId 提供，且本月未结束，则当前事件替换为 nextEventId 继续本步。
+   * 消耗一步。nextEventId 提供时，进入该事件继续本步（不计步），
+   * 否则 usedSteps++，走满 stepCount 进入下月。
    */
-  private consumeStep(withChoice: boolean, logs: string[] = [], nextEventId?: string) {
+  private consumeStep(logs: string[] = [], nextEventId?: string) {
     const md = this.monthDef()
     const rt = this.state.monthRuntime
     if (!md || !rt) return
 
-    // 先结算日志到叙述头部，保证玩家能看到反馈
     const logLine = logs.length ? logs.join('\n') + '\n\n' : ''
-    if (logLine) this.state.narrative = logLine + this.state.narrative
 
     if (nextEventId) {
-      // 强制转移到指定事件：仍在本月内，不增加 usedSteps
       const nextEv = this.eventById(nextEventId)
       if (nextEv) {
         rt.currentEventId = nextEv.id
+        rt.usedEventIds.add(nextEv.id)
         const ctxCopy = this.ctx()
         const choices = nextEv.choices
           .filter((c) => evalCondition(c.require, ctxCopy))
           .map((c) => ({ id: c.id, text: c.text }))
-        this.state.narrative = `【${nextEv.title}】\n${nextEv.narrative}`
+        this.state.narrative = logLine + `【${nextEv.title}】\n${nextEv.narrative}`
         this.choicesCache = choices
         return
       }
@@ -314,16 +304,13 @@ export class RunEngine {
     rt.usedSteps += 1
 
     if (rt.usedSteps >= md.stepCount) {
-      // 本月结束 → 下月
       this.enterMonth(md.index + 1)
       return
     }
 
-    // 本月继续渲染下一步
     this.renderCurrentStep()
+    if (logLine) this.state.narrative = logLine + this.state.narrative
   }
-
-  // ---------- 好感封顶 ----------
 
   private enforceAffinityCap(aff: Record<string, number>) {
     const cap = this.script.affinityCap
@@ -335,8 +322,6 @@ export class RunEngine {
       if (aff[k] > 0) aff[k] = Math.floor(aff[k] * ratio)
     }
   }
-
-  // ---------- 结局 ----------
 
   private finish() {
     this.state.finished = true
@@ -369,8 +354,6 @@ export class RunEngine {
     this.lastOutcomeNarrative = '你走完了三年。'
     this.state.narrative = this.lastOutcomeNarrative
   }
-
-  // ---------- 订阅 ----------
 
   subscribe(listener: (s: Snapshot) => void): () => void {
     this.listeners.add(listener)

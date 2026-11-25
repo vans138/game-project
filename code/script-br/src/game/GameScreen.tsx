@@ -1,4 +1,5 @@
 // UI：背景 + 月数 + 选项 + 下方文本框；右上角关系面板；左上角世界因子面板。
+// v4.2：移除"推进到下一月"按钮（引擎自动推进；空步由引擎给"（继续）"伪选项）。
 
 import { useEffect, useRef, useState } from 'react'
 import type { GameSource, GameView } from './GameView'
@@ -14,7 +15,6 @@ export default function GameScreen({ source }: { source: GameSource }) {
   useEffect(() => { textRef.current?.scrollTo({ top: 0 }) }, [view.narrative])
 
   const onChoose = (id: string) => setView(source.choose(id))
-  const showAdvance = view.choices.length === 0 && !view.finished && view.month > 0
 
   return (
     <div className="g-root">
@@ -67,9 +67,6 @@ export default function GameScreen({ source }: { source: GameSource }) {
           {view.choices.map((c) => (
             <button key={c.id} className="g-choice" onClick={() => onChoose(c.id)}>{c.text}</button>
           ))}
-          {showAdvance && (
-            <button className="g-choice" onClick={() => onChoose('__advance__')}>推进到下一月</button>
-          )}
         </div>
       </div>
 
