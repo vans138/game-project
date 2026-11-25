@@ -1,8 +1,5 @@
-// GameSource 单机实现（v6）：开局选身份 → 选"在意的人" → RunEngine → GameView
-//
-// 两步开局：
-//   1) 选玄幻身份（本批只有"龙烬余孤"）
-//   2) 选"在意的人"（crushId）——它决定随机互动里"她"的树是否进池、以及 byMutual 的判定对象
+// GameSource 单机实现（v6）：开局选玄幻身份 → 引擎随机确定身份因子 → 转 GameView
+// 相对 v5：Snapshot 新增 clues / playerPower，透传给 GameView
 
 import type { GameSource, GameView } from './GameView'
 import { SCRIPT_1 } from './script/script1'
@@ -46,32 +43,33 @@ function toView(s: Snapshot): GameView {
     affinityTotal: s.affinityTotal,
     affinityCap: s.affinityCap,
     identityName: s.identityName,
-    crushName: s.crushName,
     isEventMonth: s.isEventMonth,
+    clues: s.clues.map((c) => ({
+      id: c.id,
+      title: c.title,
+      stage: c.stage,
+      total: c.total,
+      done: c.done,
+    })),
+    playerPower: s.playerPower,
   }
 }
 
 export function createLocalSource(): GameSource {
   let engine: RunEngine | null = null
   let lastSnap: Snapshot | null = null
-  let stage: 'identity' | 'crush' | 'run' = 'identity'
-  let chosenIdentity: string | null = null
   const listeners = new Set<(view: GameView) => void>()
 
-  function notify(view: GameView) {
-    listeners.forEach((fn) => fn(view))
-  }
-
-  function startRun(crushId: string) {
-    if (!chosenIdentity) return
-    engine = new RunEngine(SCRIPT_1, chosenIdentity, { crushId })
+  function startWithIdentity(identityId: string) {
+    engine = new RunEngine(SCRIPT_1, identityId)
     lastSnap = engine.snapshot()
-    stage = 'run'
     engine.subscribe((s) => {
       lastSnap = s
-      notify(toView(s))
+      const view = toView(s)
+      listeners.forEach((fn) => fn(view))
     })
-    notify(toView(lastSnap))
+    const view = toView(lastSnap)
+    listeners.forEach((fn) => fn(view))
   }
 
   function identityView(): GameView {
@@ -94,66 +92,28 @@ export function createLocalSource(): GameSource {
       affinityTotal: 0,
       affinityCap: SCRIPT_1.affinityCap,
       identityName: first?.name ?? '',
-      crushName: '',
       isEventMonth: false,
-    }
-  }
-
-  function crushView(): GameView {
-    return {
-      month: 0,
-      year: 0,
-      monthOfYear: 0,
-      monthType: 'school',
-      phase: 'intro',
-      phaseHint: '',
-      background: PLACEHOLDER_BG,
-      narrative:
-        '【轮回校园 · 你在意的人】\n\n' +
-        '这三年里，你总会不自觉地看向某个人。\n' +
-        'TA 是谁，会决定你深夜会不会绕路、会不会在人群里先找那一张脸。\n\n' +
-        '（选定后不可更改。你与 TA 的好感达到 30，才会出现"双方都主动"的分支。）',
-      choices: SCRIPT_1.npcs.map((n) => ({ id: `crush:${n.id}`, text: `${n.name} · ${n.relation}` })),
-      finished: false,
-      affinity: [],
-      affinityTotal: 0,
-      affinityCap: SCRIPT_1.affinityCap,
-      identityName: chosenIdentity ?? '',
-      crushName: '',
-      isEventMonth: false,
+      clues: [],
+      playerPower: 0,
     }
   }
 
   return {
     getView() {
-      if (stage === 'identity') return identityView()
-      if (stage === 'crush' || !engine) return crushView()
+      if (!engine) return identityView()
       return toView(lastSnap ?? engine.snapshot())
     },
     choose(choiceId: string) {
-      if (stage === 'identity') {
+      if (!engine) {
         if (choiceId.startsWith('identity:')) {
           const identityId = choiceId.slice('identity:'.length)
           const found = SCRIPT_1.identities.find((x) => x.id === identityId)
           if (found) {
-            chosenIdentity = found.id
-            stage = 'crush'
-            const view = crushView()
-            notify(view)
-            return view
+            startWithIdentity(found.id)
+            return lastSnap ? toView(lastSnap) : identityView()
           }
         }
         return identityView()
-      }
-      if (stage === 'crush' || !engine) {
-        if (choiceId.startsWith('crush:')) {
-          const crushId = choiceId.slice('crush:'.length)
-          if (SCRIPT_1.npcs.some((n) => n.id === crushId)) {
-            startRun(crushId)
-            return lastSnap ? toView(lastSnap) : crushView()
-          }
-        }
-        return crushView()
       }
       const snap = engine.choose(choiceId)
       lastSnap = snap

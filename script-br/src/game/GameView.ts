@@ -1,4 +1,4 @@
-// GameView：UI 只读快照（v6）
+// GameView：UI 只读快照（v6：接线索 + 战力）
 
 export interface GameChoice {
   id: string
@@ -8,6 +8,14 @@ export interface GameChoice {
 export interface AffinityItem {
   name: string
   value: number
+}
+
+export interface ClueItem {
+  id: string
+  title: string
+  stage: number
+  total: number
+  done: boolean
 }
 
 export type GamePhase =
@@ -39,9 +47,11 @@ export interface GameView {
   affinityTotal: number
   affinityCap: number
   identityName: string
-  /** 开局选定的"在意的人"（没选则为空串） */
-  crushName: string
   isEventMonth: boolean
+  /** v6：线索列表（仅已获得） */
+  clues: ClueItem[]
+  /** v6：玩家战力 */
+  playerPower: number
 }
 
 export interface GameSource {

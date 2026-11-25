@@ -1,4 +1,4 @@
-// UI：背景 + 月/阶段 + 选项 + 下方文本框 + 右上关系面板
+// UI：背景 + 月/阶段 + 选项 + 下方文本框 + 右上关系面板（含战力、线索）
 
 import { useEffect, useRef, useState } from 'react'
 import type { GameSource, GameView } from './GameView'
@@ -21,19 +21,30 @@ export default function GameScreen({ source }: { source: GameSource }) {
 
       {view.month > 0 && (
         <button className="g-panel-toggle" onClick={() => setShowPanel((v) => !v)}>
-          {showPanel ? '收起' : '关系'}
+          {showPanel ? '收起' : '状态'}
         </button>
       )}
       {showPanel && (
         <div className="g-panel">
+          <div className="g-panel-head">战力 {view.playerPower}</div>
           <div className="g-panel-head">好感 {view.affinityTotal}/{view.affinityCap}</div>
-          {view.crushName && <div className="g-panel-crush">在意 · {view.crushName}</div>}
           {view.affinity.length === 0 && <div className="g-panel-empty">暂无</div>}
           {view.affinity.map((a) => (
             <div key={a.name} className="g-panel-row">
               <span>{a.name}</span><span>{a.value}</span>
             </div>
           ))}
+          {view.clues.length > 0 && (
+            <>
+              <div className="g-panel-head" style={{ marginTop: 8 }}>线索</div>
+              {view.clues.map((c) => (
+                <div key={c.id} className="g-panel-row">
+                  <span>{c.title}</span>
+                  <span>{c.done ? '已查清' : `${c.stage}/${c.total}`}</span>
+                </div>
+              ))}
+            </>
+          )}
         </div>
       )}
 
