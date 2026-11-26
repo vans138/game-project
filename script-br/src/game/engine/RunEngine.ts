@@ -1,4 +1,14 @@
-// RunEngine v10（单文件合并版）
+// RunEngine v11（A/V 模型 + 三池）
+//
+// v11 变更（相对 v10，不改变已有事件行为）：
+//   1) 三池：V1 随机互动（interactEvents）/ V2 小事件（smallEvents）/ V3 世界事件（worldEvents）
+//   2) 新增 phase 'worldEvent'：进入新月时抽池 C，抽中则插在世界事件层
+//   3) 因子调概率：InteractEvent/SmallEventDef/WorldEventDef 的 weightModifiers
+//      —— tierWeights 调难度档位分布，weightDelta 调同一档内事件自身权重
+//   4) 随机互动事件/节点/选项支持 effects（走 applyEffectsCapped，好感上限照旧）
+//   5) InteractEvent.opportunityCost 可覆盖"占几次机会"
+//
+// 原 v10（单文件合并版）
 //
 // 原 v9 把引擎拆成 RunEngineBase.ts（数据层）+ RunEngine.ts（视图/入口）子类，
 // 目的是绕开"单次写入有长度上限"的限制。现在合回一个文件：
@@ -11,7 +21,7 @@
 
 import type {
   Script, EventDef, MonthDef, InteractEvent, InteractNode, InteractChoice,
-  IdentityFactorId, ClueDef, ChoiceOutcome, Effect, EventTier,
+  IdentityFactorId, ClueDef, ChoiceOutcome, Effect, EventTier, WeightModifier,
 } from '../script/types'
 import { evalCondition, applyEffects, type EvalContext } from './evaluator'
 import { listInvestigable, acquireClue, investigateClue, type ClueRuntime } from './clues'
@@ -42,6 +52,7 @@ export interface PlayerRuntime {
 export interface CoerceState { targetId: string; actionVoided: boolean }
 
 export type MonthPhase =
+  | 'worldEvent'   // V3：月初世界事件（可能抽空，抽中就插这一层）
   | 'intro' | 'mainChoice' | 'feedback' | 'smallEvent' | 'fixedEvent'
   | 'interact1' | 'interact2' | 'summary' | 'holidaySkip' | 'done'
 
@@ -84,6 +95,10 @@ export interface RunState {
   /** 已经死亡的对象：不再出现在拉关系/龙迫候选里，也不占好感总额度 */
   deadNpcs: Set<string>
   pendingLakeDragonSettle: boolean
+  /** V3：本月抽中的世界事件 id（null = 没抽中） */
+  worldEventId: string | null
+  /** 已经触发过的世界事件（once 去重） */
+  firedWorldEvents: Set<string>
 }
 
 export const CHOICE_SKIP = '__skip__'
@@ -155,6 +170,7 @@ export class RunEngine {
       coerceState: null, coercedTargets: new Set(), outOfControlTargets: new Set(),
       deadNpcs: new Set(),
       pendingLakeDragonSettle: false,
+      worldEventId: null, firedWorldEvents: new Set(),
     }
     this.enterMonth(this.state.monthIndex)
   }
