@@ -167,6 +167,38 @@ def extract_saves(text):
     return clean, saves
 
 
+# ---------- 续写标记（SAVE 块内一律不动）----------
+# 血泪教训：以前是对整条回复做 content.replace("<<<MORE>>>", "")，
+# 而回复里可能正好有"本脚本自己的源码"（含 <<<MORE>>> 字面量），
+# 结果把源码里的标记删了 → has_more 恒真 → 无限请求、永远不回话。
+MORE_TAG = "<<<MORE>>>"
+MAX_CONTINUATIONS = 8
+
+
+def split_outside_saves(text):
+    """把文本切成 [(片段, 是否在 SAVE 块内), ...]，保证块内内容不被改写。"""
+    parts, pos = [], 0
+    for m in SAVE_RE.finditer(text):
+        parts.append((text[pos:m.start()], False))
+        parts.append((m.group(0), True))
+        pos = m.end()
+    parts.append((text[pos:], False))
+    return parts
+
+
+def has_more_marker(text):
+    """只看 SAVE 块之外的续写标记；块内的是文件正文（比如本脚本的源码）。"""
+    return any(MORE_TAG in seg for seg, inside in split_outside_saves(text) if not inside)
+
+
+def strip_more_marker(text):
+    """只去掉 SAVE 块之外的续写标记，块内原样保留。"""
+    out = []
+    for seg, inside in split_outside_saves(text):
+        out.append(seg if inside else seg.replace(MORE_TAG, ""))
+    return "".join(out)
+
+
 # ---------- System Prompt ----------
 SYSTEM_PROMPT = """你是一位资深独立游戏设计师兼全栈游戏工程师，有 10 年经验。
 
@@ -185,9 +217,9 @@ SYSTEM_PROMPT = """你是一位资深独立游戏设计师兼全栈游戏工程�
 【原则】不确定就问；MVP优先；代码要能直接跑；中文沟通。
 
 【续写约定（重要）】
-- 如果你预判本轮回复太长、可能写不完全部内容，请在「一个完整的文件块」结束后（<<<END>>> 之后的新行）另起一行写 
--  必须独占一行；系统检测到它会自动让你继续写剩余部分。
-- 绝不要在一个代码块中间截断后写 ，必须写完当前文件再续。
+- 如果你预判本轮回复太长、可能写不完全部内容，请在「一个完整的文件块」结束后（<<<END>>> 之后的新行）另起一行写 <<<MORE>>>
+- <<<MORE>>> 必须独占一行。系统检测到它会自动让你继续写剩余部分。
+- 绝不要在一个代码块中间截断后写 <<<MORE>>>，必须写完当前文件再续。
 - 续写时从上次结尾接着写，不要重复已写内容。
 
 【单文件长度红线（重要）】
@@ -275,19 +307,30 @@ def ask(msg):
     history.append({"role": "user", "content": msg})
 
     full_content = ""
+    rounds = 0
+    print("  [已发送，等待 DeepSeek 回复…]", flush=True)
     while True:
         content = call_api(history)
         if content is None:
-            history.pop()
-            return
+            if not full_content:
+                # 第一条就失败：回滚本轮 user 消息，避免污染上下文
+                history.pop()
+                return
+            print("  [中止] 续写请求失败，先按已收到的内容处理")
+            break
 
-        has_more = "" in content
-        content = content.replace("", "").rstrip()
+        rounds += 1
+        more = has_more_marker(content)
+        content = strip_more_marker(content).rstrip()
         full_content = (full_content + "\n" + content) if full_content else content
         history.append({"role": "assistant", "content": content})
 
-        if not has_more:
+        if not more:
             break
+        if rounds >= MAX_CONTINUATIONS:
+            print(f"  [续写] 已连续 {rounds} 段，达到上限，停止续写（请检查上一段是否被截断）")
+            break
+        print(f"  [续写] 第 {rounds} 段已收到，正在请求剩余部分…", flush=True)
         history.append({"role": "user",
                         "content": "继续，从上次结尾接着写，不要重复已写内容，写完用收尾标记结束。"})
 

@@ -59,9 +59,8 @@ game/
   styles.css
 
   engine/
-    RunEngine.ts       # 【入口】class RunEngine extends RunEngineBase
-                       #   只放 snapshot/buildPhaseView/identityHint/choose/emitAndSnap/subscribe
-    RunEngineBase.ts   # 【数据层】state/月份流程/主选项/调查/龙迫/小事件/失控/随机互动抽取/湖面结算
+    RunEngine.ts       # 【单文件引擎｜880 行】state/月份流程/主选项/调查/龙迫/小事件/
+                       #   失控/随机互动抽取/湖面结算/视图/choose/订阅 全在这里
     balance.ts         # 所有概率与数值常量（事件三档基准、结果两侧基准、龙迫加成、小事件、伤害）
     modifiers.ts       # 概率调制内核：baseTierWeights/applyTierModifier/normalizeTier/pickTier
                        #               baseSideWeights/applySideModifier/normalizeSide/pickSide
@@ -130,7 +129,8 @@ game/
 - 已改成 **fail-safe 落盘**：`extract_saves()` 会用 `looks_truncated()` 检查可疑截断（末行坏结尾 / 括号不配平 / 反引号奇数），**疑似截断就拒写，转存 `.pending/`**。
 - 因此：**永远不会再出现"好文件被半截覆盖成坏的"**。
 - `.pending/` 已自动加进 `.gitignore`，且不喂给模型。
-- **单文件长度红线：≤200 行**。超过就拆文件，别再整份硬发。
+- **单文件长度红线：≤200 行**（只针对"用本脚本一次性重发整份文件"这一种情况）。超过 200 行请拆成多个小文件——这套限制正是当初把引擎拆成 `RunEngineBase.ts` + `RunEngine.ts` 的原因。
+- **例外：`script-br/src/game/engine/RunEngine.ts` 已于 2026-11-26 合并回单文件（880 行）**。如果用本脚本改它，不要整份重发（大概率输出被截断 → 被 .pending 拒绝）：优先只发改动片段，或交给没有输出长度限制的工具改这个文件。
 - 如果某轮有文件被拒写，终端会打印 `❌ 拒绝写入 …`，去 `.pending/` 找到那份内容即可。
 
 ---
@@ -176,5 +176,6 @@ game/
 
 ## 九、变更记录（小日志）
 
+- 2026-11-26：**把 `RunEngineBase.ts` + `RunEngine.ts` 合并回单文件 `RunEngine.ts`（880 行）**，`RunEngineBase.ts` 已删除；原来 `protected` 全部收回 `private`。合并前后用同一个探针跑了 10 局（含强制 -55 触发失控/龙迫），输出 415 行**逐字节一致**；typecheck / 构建通过。
 - 2026-11-26：第 2.1 批完成（古龙线骨架 + 线索 + 战力 + 唤龙 + 龙迫 + 失控/伤害 + 双维度事件 + 两段抽概率 + fail-safe 落盘）。typecheck 通过，dev 能跑。
 - 2026-11-26：连 VPN 后补推一次（内容不变，仅本日志加此行）。
