@@ -124,6 +124,8 @@ export interface Snapshot {
   playerPower: number
   acquiredFactors: string[]
   coercedTargetName?: string
+  /** V3：本月世界事件 id（null = 没抽中） */
+  worldEventId?: string | null
 }
 
 function hashSeed(s: string): number {
@@ -852,6 +854,7 @@ export class RunEngine {
         playerPower: this.state.player.power,
         acquiredFactors,
         coercedTargetName,
+        worldEventId: this.state.worldEventId,
       }
     }
 
@@ -875,6 +878,7 @@ export class RunEngine {
       playerPower: this.state.player.power,
       acquiredFactors,
       coercedTargetName,
+      worldEventId: this.state.worldEventId,
     }
   }
 
@@ -903,6 +907,16 @@ export class RunEngine {
 
     if (ph === 'holidaySkip') {
       return { narrative: prefix + '（假期）这个月不上学。', choices: [{ id: CHOICE_SKIP, text: '（假期）跳过' }] }
+    }
+
+    if (ph === 'worldEvent') {
+      const we = this.state.worldEventId
+        ? this.script.worldEvents.find((e) => e.id === this.state.worldEventId)
+        : undefined
+      const body = we
+        ? `【世界事件】${we.title}\n${we.text}`
+        : '【世界事件】这个月，世界那边什么也没发生。'
+      return { narrative: prefix + body, choices: [{ id: 'world_next', text: '继续' }] }
     }
 
     if (ph === 'intro') {
@@ -1011,6 +1025,22 @@ export class RunEngine {
 
     if (ph === 'holidaySkip') {
       if (choiceId === CHOICE_SKIP) this.advanceMonth()
+      return this.emitAndSnap()
+    }
+    if (ph === 'worldEvent') {
+      if (choiceId === 'world_next') {
+        const we = this.state.worldEventId
+          ? this.script.worldEvents.find((e) => e.id === this.state.worldEventId)
+          : undefined
+        if (we) {
+          if (we.once !== false) this.state.firedWorldEvents.add(we.id)
+          if (we.effects && we.effects.length > 0) this.applyEffectsCapped(we.effects)
+          this.log(`世界事件 · ${we.title}`)
+        }
+        this.state.worldEventId = null
+        this.state.monthRuntime.phase = 'intro'
+        this.state.phaseHint = '本月开始'
+      }
       return this.emitAndSnap()
     }
     if (ph === 'intro') {

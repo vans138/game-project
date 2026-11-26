@@ -54,6 +54,8 @@ export interface GameView {
   clues: ClueItem[]
   /** v6：玩家战力 */
   playerPower: number
+  /** v11：本月世界事件 id（null/未定义 = 本月没抽到世界事件） */
+  worldEventId?: string | null
 }
 
 export interface GameSource {

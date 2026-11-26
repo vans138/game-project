@@ -52,6 +52,7 @@ function toView(s: Snapshot): GameView {
       done: c.done,
     })),
     playerPower: s.playerPower,
+    worldEventId: s.worldEventId ?? null,
   }
 }
 
