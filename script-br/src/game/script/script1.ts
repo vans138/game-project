@@ -395,21 +395,25 @@ const interactEvents: InteractEvent[] = [
         {
           text: '推门进去', requires: { identityFactor: 'ancient' },
           next: {
-            byMutual: {
-              text: '门开了。门后没有人——门后是你自己，背对着，慢慢转过头。',
-              gainClue: 'clue_chain',
-            },
+            // 古龙线：门后是你自己——这里拿不到《锁链》（那是封龙的线索）
+            byMutual: { text: '门开了。门后没有人——门后是你自己，背对着，慢慢转过头。' },
             byOneSide: { text: '门推到一半就停住了。光从缝里流出来，照在你脚背上。' },
           },
         },
         {
           text: '伸手，隔着门去摸', requires: { identityFactor: 'seal' },
           next: {
+            // 封龙专属线索《锁链》：选了「摸」就必得，不再走 60% 随机分支
             byMutual: {
               text: '门后传来一声很轻的抓挠，像有什么被困在里面，认出了你。',
               gainClue: 'clue_chain',
             },
-            byOneSide: { text: '你的手掌贴上门，什么都没有发生。凉意顺着掌心往上爬。' },
+            byOneSide: {
+              text:
+                '你的手掌贴上门，什么都没有发生。凉意顺着掌心往上爬。\n' +
+                '有一瞬间，你觉得自己摸到的不是门——是一圈一圈的锁链。',
+              gainClue: 'clue_chain',
+            },
           },
         },
         { text: '转身离开', next: { text: '你转身，走下楼梯。门在你身后慢慢淡了下去。' } },
