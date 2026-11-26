@@ -62,6 +62,8 @@ export interface MonthRuntime {
   isEventMonth: boolean
   fixedEventId?: string
   opportunityUsed: 0 | 1 | 2
+  /** 本月已经抽到过的随机互动事件 id：①/② 不再重复抽同一个 */
+  usedEventIds: string[]
 }
 
 export interface InteractRuntime {
@@ -81,7 +83,6 @@ export interface RunState {
   monthRuntime: MonthRuntime
   interact: InteractRuntime | null
   mainChoice?: 'study' | 'bond' | 'rest' | 'investigate' | 'coerce'
-  bondTargetId?: string
   feedback?: { self: string; peers: string; special?: string }
   phaseHint: string
   monthLog: string[]
@@ -165,7 +166,7 @@ export class RunEngine {
       monthRuntime: {
         index: firstMonth?.index ?? 1, phase: 'intro',
         isEventMonth: !!firstMonth?.fixedEvent, fixedEventId: firstMonth?.fixedEvent,
-        opportunityUsed: 0,
+        opportunityUsed: 0, usedEventIds: [],
       },
       interact: null, phaseHint: '', monthLog: [], stageNarrative: undefined,
       firedOnceEvents: new Set(), investigatedThisMonth: null,
@@ -230,7 +231,6 @@ export class RunEngine {
     this.state.month = md.month
     this.state.interact = null
     this.state.mainChoice = undefined
-    this.state.bondTargetId = undefined
     this.state.feedback = undefined
     this.state.monthLog = []
     this.state.stageNarrative = undefined
@@ -240,7 +240,8 @@ export class RunEngine {
     this.state.worldEventId = null
     this.state.monthRuntime = {
       index: md.index, phase: 'intro',
-      isEventMonth: !!md.fixedEvent, fixedEventId: md.fixedEvent, opportunityUsed: 0,
+      isEventMonth: !!md.fixedEvent, fixedEventId: md.fixedEvent,
+      opportunityUsed: 0, usedEventIds: [],
     }
     if (md.type === 'holiday') {
       this.state.monthRuntime.phase = 'holidaySkip'
@@ -329,7 +330,6 @@ export class RunEngine {
     if (choiceId.startsWith('bond:')) {
       this.state.mainChoice = 'bond'
       const targetId = choiceId.slice('bond:'.length)
-      this.state.bondTargetId = targetId
       const npc = this.script.npcs.find((n) => n.id === targetId)
       const bump = npc?.relation === '友' ? 8 : npc?.relation === '尊' ? 5 : 4
       const gained = this.addAffinity(targetId, bump)
@@ -436,15 +436,9 @@ export class RunEngine {
     const base = SMALL_EVENT.base
     const key = this.state.mainChoice ?? 'rest'
     const mainBonus = SMALL_EVENT.mainChoiceBonus[key] ?? 0
-    let relationMod = 0
-    if (this.state.mainChoice === 'study') {
-      const tid = this.state.bondTargetId
-      const v = tid ? (this.state.player.affinity[tid] ?? 0) : 0
-      if (tid && v < 10) relationMod = SMALL_EVENT.relationNegative
-      else relationMod = SMALL_EVENT.relationNeutral
-    } else if (this.state.mainChoice === 'bond') {
-      relationMod = SMALL_EVENT.relationPositive
-    }
+    // 拉关系本身更容易触发小事件；"在意的人好感低 → 学习被打扰"那套随 crush 一起删掉了，
+    // 等 crush 重新接入时再按当时的模型补回来。
+    const relationMod = this.state.mainChoice === 'bond' ? SMALL_EVENT.relationPositive : 0
     const p = Math.max(0, Math.min(1, base + mainBonus + relationMod))
     return this.rng.chance(p)
   }
@@ -564,8 +558,11 @@ export class RunEngine {
   private pickInteract(mode: 'all' | 'shortOnly'): InteractEvent | null {
     const pool = this.script.interactEvents
     if (!pool.length) return null
+    const used = new Set(this.state.monthRuntime.usedEventIds)
     const filtered = pool.filter((e) => {
       if (mode === 'shortOnly' && e.kind !== 'short') return false
+      // 同一个月里 ①/② 不重复抽同一个事件
+      if (used.has(e.id)) return false
       if (e.requires?.hasCrush === true && !this.state.player.crushId) return false
       if (e.requires?.identityFactor && e.requires.identityFactor !== this.state.player.identityFactor) return false
       if (e.onceGuaranteed && this.state.firedOnceEvents.has(e.id)) return false
@@ -607,6 +604,9 @@ export class RunEngine {
 
   private startInteract(event: InteractEvent, isFirst: boolean) {
     if (event.onceGuaranteed) this.state.firedOnceEvents.add(event.id)
+    if (!this.state.monthRuntime.usedEventIds.includes(event.id)) {
+      this.state.monthRuntime.usedEventIds.push(event.id)
+    }
     const rt: InteractRuntime = {
       eventId: event.id, kind: event.kind, node: event.root,
       becameLong: false, pendingChoices: [],

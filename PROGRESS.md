@@ -26,7 +26,7 @@
 ### 下一步建议（按用户"继续补古龙线"的方向）
 1. **给古龙线加新月份/新事件**：目前只有 6 个月、5 个固定事件，古龙线的"推进感"主要靠文本。可加 1~2 个事件（十一月裂痕 / 一月旧楼夜）。
 2. **让《龙？》《锁链》真正影响结局**：现在结局固定 `outcomes[0]`，线索查清与否不影响任何东西。可先做最简单的：按线索完成数给不同结局文案。
-3. **修同月①/②重复抽同一事件**（见 §六 第 1 条）。这条不修，随机互动的重复感会很明显。
+3. **（已修）同月①/②重复抽同一事件**：`MonthRuntime.usedEventIds` 去重已落地。
 
 ### 已知的坑（别踩）
 - `enforceAffinityCap()` **只管正向**：负向不会被裁剪，能到 -50 甚至更低。
@@ -80,7 +80,7 @@ game/
     script1.ts         # 第一份剧本（Y1-9 ~ Y2-2，6 个月；池 B 3 条，池 C 空）
 
 docs/
-  month_flow.md        # 月度 8/9 阶段流程（v1，部分内容已过时，以 state_model.md 为准）
+  month_flow.md        # 月度流程 v2（v9 三池模型，与代码同步；状态模型见 state_model.md）
   state_model.md       # 【重要】A/V 状态模型 v9：因子分类、三池、加权、阶段顺序、与 v8 的差异
 ```
 
@@ -158,7 +158,7 @@ docs/
 - 因子调概率：池条目可挂 `weightModifiers`（`when` 条件 + `tierWeights` 改档位分布 + `weightDelta` 改同档内权重）。
 - 互动选项/节点可带 `effects`（选中时 / 进入节点时执行）。
 - 删除：`Script.factorPool` / `factorGroups` / `FactorDef` / `FactorGroup`、`Condition.factorActive`、`Effect.setTerminate`。
-- **权威说明见 [docs/state_model.md](docs/state_model.md)**；`docs/month_flow.md` 是 v1 流程，部分内容已过时。
+- **权威说明见 [docs/state_model.md](docs/state_model.md)**；月度顺序见 [docs/month_flow.md](docs/month_flow.md)（v2，已同步）。
 - **现状**：池 C `worldEvents: []`（V3 实机暂时不会出现）；`weightModifiers` 还没有任何剧本条目使用。
 
 ---
@@ -205,7 +205,7 @@ docs/
 
 ## 六、已知简化 / 未做（下次避雷）
 
-1. **同月①/②会抽到同一个随机事件（回归，待修）**：`pickInteract` 没有"本月已抽过"的去重（实测 200 局里 175 局出现）。修法：`MonthRuntime` 加 `usedEventIds`，②的池子排除①抽过的。
+1. **（已修）同月①/②重复**：`pickInteract` 现在排除本月已抽过的 id（`MonthRuntime.usedEventIds`）。
 2. **时间线只有 6 个月**（Y1-9 ~ Y2-2）。第 6 个月（2 月寒假）走完就 `finish()`，结局固定 `outcomes[0]`「【第一学期 · 完】」。用户已确认这是 MVP 边界，**不是 bug**。
 3. **结局与线索/目标无关**：查清《龙？》《锁链》目前不改变结局，也没有"私人目标完成度"判定。
 4. **湖面事件还是渐变占位背景**，没接真的龙的图。
@@ -235,7 +235,7 @@ docs/
 
 A 任务已完成（负好感路径 / 失控 / 龙迫 / 唤龙 / 第二线索），**不要再重做**。下一步按"继续补古龙线"：
 
-1. **修同月①/②重复**（做内容之前先修，详见 §六 1）。
+1. 池 B/C 填内容：让"小事件"和"世界事件"真正参与古龙线（现在池 C 是空的）。
 2. **给古龙线加事件**：现在 6 个月只有 5 个固定事件，古龙线的推进感不够。建议加"十一月 · 裂痕"或"一月 · 旧楼夜"，把《锁链》的线索来源从随机互动挪一部分到固定事件里（固定事件更可控）。
 3. **让线索影响结局**：最简单的版本——结局按《龙？》《锁链》的完成数给 3 档文案（都不查清 / 查清一条 / 两条都查清），不需要做完整结局系统。
 4. 想扩周期也先问用户：**不要自作主张扩到三年**。
@@ -244,6 +244,7 @@ A 任务已完成（负好感路径 / 失控 / 龙迫 / 唤龙 / 第二线索）
 
 ## 九、变更记录（小日志）
 
+- 2026-11-26：**隐患修复**：①同月随机互动①/②去重（`MonthRuntime.usedEventIds`，实测 200 局 0 次重复）；②`docs/month_flow.md` 重写为 v2（补 worldEvent、池 A/B/C、去重、weightModifiers、opportunityCost、chance）；③删掉 `bondTargetId` 与小事件里那条"在意的人"死分支（crush 已移除，逻辑永远不成立）。
 - 2026-11-26：**接住另一个对话的 v9 三池重构并修好**：`GamePhase` 补 `worldEvent`、`script1.ts` 删掉残留的 `factorPool/factorGroups`（4 个 typecheck 错误）；补 `__advance__` 兜底；新增 [docs/state_model.md](docs/state_model.md)（A/V 模型权威说明）；PROGRESS/project_state 同步 v9 结构。实测 fuzz 300 局无异常、世界事件/小事件池均可用、古龙线龙迫（seed 1 因邱死亡所以无龙迫，属正确行为）。
 - 2026-11-26：**提示语/上下文更新（防止下一个 AI 以为还在旧阶段）**：SYSTEM_PROMPT 顶部加【项目现状】（阶段3、唯一在跑 script-br、code/ deprecated、当前方向古龙线、不要回阶段1/2）；去掉 `SAVE:code/` 旧示例；把 `code/`、`script-br-patch/` 和锁文件从喂入上下文里剔除；新增 260k 字符总预算。实测上下文 344k→130k 字符、60→28 个文件。
 - 2026-11-26：**《锁链》改成封龙专属**：古龙分支不再给；封龙选「伸手，隔着门去摸」时两个结果节点都带 gainClue，所以**必得**（原来挂在 60% 的 byMutual 上，实机很难看见）。实测封龙 200/200 拿到、古龙 0/200。
