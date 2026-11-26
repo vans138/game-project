@@ -459,15 +459,25 @@ export class RunEngine {
       return
     }
     const happened = this.rollSmallEvent()
-    if (!happened) this.state.stageNarrative = '这个月没有发生什么特别的意外。'
-    else {
-      const variants = [
-        '课间，走廊尽头的窗子外面，有一只黑鸟一直盯着你看。',
-        '放学时你在储物柜里发现一张没有落款的纸条，只写了两个字：“小心。”',
-        '某个午后你忽然头晕，眼前的课本一页页翻过去，像在快进。',
-      ]
-      const idx = this.rng.weightedIndex(variants.map(() => 1))
-      this.state.stageNarrative = variants[idx >= 0 ? idx : 0]
+    if (!happened) {
+      this.state.stageNarrative = '这个月没有发生什么特别的意外。'
+    } else {
+      // V2：从池 B（smallEvents）抽，按因子调权重
+      const ctx = this.ctx()
+      const pool = this.script.smallEvents.filter((e) => evalCondition(e.require, ctx))
+      if (pool.length > 0) {
+        const weights = pool.map((e) => this.effectiveWeight(e.weight, e.weightModifiers, ctx))
+        const idx = this.rng.weightedIndex(weights)
+        const picked = idx >= 0 ? pool[idx] : pool[0]
+        if (picked) {
+          this.state.stageNarrative = picked.text
+          if (picked.effects && picked.effects.length > 0) {
+            this.applyEffectsCapped(picked.effects)
+          }
+        }
+      } else {
+        this.state.stageNarrative = '这个月没有发生什么特别的意外。'
+      }
     }
     this.state.monthRuntime.phase = 'smallEvent'
     this.state.phaseHint = '小事件'
@@ -697,6 +707,11 @@ export class RunEngine {
     if (!picked) return
     if (rt.node.text) this.log(rt.node.text)
 
+    // v11：选项自身的效果（先扣好感/加 flag/给进度，再走分支）
+    if (picked.src.effects && picked.src.effects.length > 0) {
+      this.applyEffectsCapped(picked.src.effects)
+    }
+
     const nextRaw = picked.src.next
     if (!nextRaw) { this.finishInteract(); return }
 
@@ -717,6 +732,10 @@ export class RunEngine {
         acquireClue(this.state.player.clueRuntime, chosen.gainClue)
         this.logGainClue(chosen.gainClue)
       }
+      // v11：分支节点的效果
+      if (chosen.effects && chosen.effects.length > 0) {
+        this.applyEffectsCapped(chosen.effects)
+      }
       this.refreshInteractChoices()
       if (rt.pendingChoices.length === 0) this.finishInteract()
       return
@@ -728,6 +747,10 @@ export class RunEngine {
     if (nextNode.gainClue) {
       acquireClue(this.state.player.clueRuntime, nextNode.gainClue)
       this.logGainClue(nextNode.gainClue)
+    }
+    // v11：单节点的效果
+    if (nextNode.effects && nextNode.effects.length > 0) {
+      this.applyEffectsCapped(nextNode.effects)
     }
     this.refreshInteractChoices()
     if (rt.pendingChoices.length === 0) this.finishInteract()
