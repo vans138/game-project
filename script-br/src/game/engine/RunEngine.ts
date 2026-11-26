@@ -235,6 +235,7 @@ export class RunEngine {
     this.state.investigatedThisMonth = null
     this.state.coerceState = null
     this.state.pendingLakeDragonSettle = false
+    this.state.worldEventId = null
     this.state.monthRuntime = {
       index: md.index, phase: 'intro',
       isEventMonth: !!md.fixedEvent, fixedEventId: md.fixedEvent, opportunityUsed: 0,
@@ -568,11 +569,16 @@ export class RunEngine {
     const buckets: Record<EventTier, InteractEvent[]> = { common: [], rare: [], critical: [] }
     for (const e of filtered) buckets[e.tier].push(e)
 
+    const ctx = this.ctx()
     const src = this.modifierSource()
-    const w: TierWeights = baseTierWeights()
+    let w: TierWeights = baseTierWeights()
     if (!buckets.common.length) w.common = 0
     if (!buckets.rare.length) w.rare = 0
     if (!buckets.critical.length) w.critical = 0
+    // 因子调「难度档位分布」：所有候选项的 tierWeights 叠加（条件不满足的跳过）
+    for (const e of filtered) {
+      w = this.applyTierWeightMods(w, e.weightModifiers, ctx)
+    }
     const mod = applyTierModifier(w, src)
     const norm = normalizeTier(mod)
     const tier = pickTier(norm, this.rng.next())
@@ -580,7 +586,10 @@ export class RunEngine {
       ? buckets[tier]
       : (buckets.common.length ? buckets.common : buckets.rare.length ? buckets.rare : buckets.critical)
     if (!bucket.length) return null
-    const idx = this.rng.weightedIndex(bucket.map((e) => e.weight))
+    // 因子调「同一档内事件自身权重」
+    const idx = this.rng.weightedIndex(
+      bucket.map((e) => this.effectiveWeight(e.weight, e.weightModifiers, ctx)),
+    )
     return idx >= 0 ? bucket[idx] : bucket[0] ?? null
   }
 
@@ -591,7 +600,11 @@ export class RunEngine {
       becameLong: false, pendingChoices: [],
     }
     this.state.interact = rt
-    this.state.monthRuntime.opportunityUsed = event.kind === 'long' ? 2 : (isFirst ? 1 : 2)
+    // 事件可显式声明 opportunityCost 覆盖默认（long=2；机会①=1、机会②=2）
+    const cost = event.opportunityCost != null
+      ? event.opportunityCost
+      : (event.kind === 'long' ? 2 : (isFirst ? 1 : 2))
+    this.state.monthRuntime.opportunityUsed = cost
     this.state.stageNarrative = event.root.text
     this.state.phaseHint = isFirst ? '随机互动①' : '随机互动②'
     this.refreshInteractChoices()
