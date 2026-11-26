@@ -478,6 +478,4 @@ export const SCRIPT_1: Script = {
       minGoalRatio: 0,
     },
   ],
-  factorPool,
-  factorGroups,
 }

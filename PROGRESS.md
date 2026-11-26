@@ -64,8 +64,8 @@ game/
   styles.css
 
   engine/
-    RunEngine.ts       # 【单文件引擎｜约 950 行】state/月份流程/主选项/调查/龙迫/小事件/
-                       #   失控/随机互动抽取/湖面结算/视图/choose/订阅 全在这里
+    RunEngine.ts       # 【单文件引擎】state/月份流程（含 worldEvent）/主选项/调查/龙迫/小事件池/
+                       #   失控/随机互动抽取（三池 + 因子调权重）/湖面结算/视图/choose/订阅
     balance.ts         # 所有概率与数值常量（事件三档基准、结果两侧基准、龙迫加成、小事件、伤害）
     modifiers.ts       # 概率调制内核：baseTierWeights/applyTierModifier/normalizeTier/pickTier
                        #               baseSideWeights/applySideModifier/normalizeSide/pickSide
@@ -75,8 +75,13 @@ game/
     rng.ts             # 种子随机 mulberry32
 
   script/
-    types.ts           # 剧本类型 v8（tier/valence 双维度、outcomes 概率结果、ClueDef、后天因子等）
-    script1.ts         # 第一份剧本（Y1-9 ~ Y2-2，6 个月）
+    types.ts           # 剧本类型 v9：A/V 三池模型（interactEvents / smallEvents / worldEvents）
+                       #   + WeightModifier（tierWeights / weightDelta）+ InteractChoice/Node.effects
+    script1.ts         # 第一份剧本（Y1-9 ~ Y2-2，6 个月；池 B 3 条，池 C 空）
+
+docs/
+  month_flow.md        # 月度 8/9 阶段流程（v1，部分内容已过时，以 state_model.md 为准）
+  state_model.md       # 【重要】A/V 状态模型 v9：因子分类、三池、加权、阶段顺序、与 v8 的差异
 ```
 
 **外部依赖不变**：`LocalSource.ts` 只 `import { RunEngine, type Snapshot } from './engine/RunEngine'`。拆文件时不要改这个入口。
@@ -144,6 +149,18 @@ game/
 - 死者：不再出现在「拉近关系」列表，不再进「龙迫」候选，不再参与失控判定；状态面板显示"已故"。
 - 结局附言："这个学期，XX 没能走到最后。"
 
+### 11. v9 A/V 三池模型（2026-11-26 落地，由另一个对话改的）
+- 因子分三类：**身份因子**（开局身份）/ **事件因子**（事件获得，如唤龙）/ **信息因子**（月/好感/战力/flag/目标进度）。
+- 事件机会三池：
+  - **V1 随机互动池 A** `interactEvents`（机会①/②；`opportunityCost` 可覆盖占几次）
+  - **V2 小事件池 B** `smallEvents`（主选项后抽，可能抽空）
+  - **V3 世界事件池 C** `worldEvents`（月初抽；新增 `worldEvent` 阶段；`once` 默认 true）
+- 因子调概率：池条目可挂 `weightModifiers`（`when` 条件 + `tierWeights` 改档位分布 + `weightDelta` 改同档内权重）。
+- 互动选项/节点可带 `effects`（选中时 / 进入节点时执行）。
+- 删除：`Script.factorPool` / `factorGroups` / `FactorDef` / `FactorGroup`、`Condition.factorActive`、`Effect.setTerminate`。
+- **权威说明见 [docs/state_model.md](docs/state_model.md)**；`docs/month_flow.md` 是 v1 流程，部分内容已过时。
+- **现状**：池 C `worldEvents: []`（V3 实机暂时不会出现）；`weightModifiers` 还没有任何剧本条目使用。
+
 ---
 
 ## 五、落盘工具（chat_with_state.py）现状
@@ -196,9 +213,10 @@ game/
 6. `it_latenight` 依赖 `hasCrush`，但还没 crush 系统 → 永远不出现在随机池。**crush 是更后面的事，先别碰。**
 7. `NpcDef.power` 写死；玩家 `power` 从 `identity.basePower` 起始，湖面 +10、唤龙 +5、古龙两个选项再各 +5。暂无其它成长途径。
 8. 单机对局不可复现（seed 来自 `Date.now()`），也没有"重新开始"，要刷新页面。
-9. 世界因子（家族/旧楼/学业）未激活（`factorPool: []`、`factorGroups: []`）。
+9. 世界事件池 C 是空的（`worldEvents: []`），所以 `worldEvent` 阶段实机不会出现；池 B 只有 3 条（黑鸟/纸条/头晕）；`weightModifiers` 还没有任何条目使用。
 10. 死亡已处理（`deadNpcs`：不进拉关系/龙迫候选、面板显示"已故"、结局附言），但**已故者仍可能被固定事件的 effects 加好感**（面板显示"已故"，不影响别人）。另外目前只有 `e_oct_walk` 会提到邱同学，且死亡发生在其后，所以暂时没有"事件里出现死人"的问题。
-11. `valence` 字段仍然没有任何地方读取；`Choice.outcomes` 也还没被剧本使用。
+11. `valence` 字段仍然没有任何地方读取；`Choice.outcomes` 也还没被剧本使用（固定事件结果仍走 `effects`）。
+12. `GameScreen` 在没有选项时会发 `__advance__`：引擎已加兜底映射（worldEvent/intro/feedback/smallEvent/interact/summary/holidaySkip/fixedEvent），不会再卡死。
 
 
 ---
@@ -226,6 +244,7 @@ A 任务已完成（负好感路径 / 失控 / 龙迫 / 唤龙 / 第二线索）
 
 ## 九、变更记录（小日志）
 
+- 2026-11-26：**接住另一个对话的 v9 三池重构并修好**：`GamePhase` 补 `worldEvent`、`script1.ts` 删掉残留的 `factorPool/factorGroups`（4 个 typecheck 错误）；补 `__advance__` 兜底；新增 [docs/state_model.md](docs/state_model.md)（A/V 模型权威说明）；PROGRESS/project_state 同步 v9 结构。实测 fuzz 300 局无异常、世界事件/小事件池均可用、古龙线龙迫（seed 1 因邱死亡所以无龙迫，属正确行为）。
 - 2026-11-26：**提示语/上下文更新（防止下一个 AI 以为还在旧阶段）**：SYSTEM_PROMPT 顶部加【项目现状】（阶段3、唯一在跑 script-br、code/ deprecated、当前方向古龙线、不要回阶段1/2）；去掉 `SAVE:code/` 旧示例；把 `code/`、`script-br-patch/` 和锁文件从喂入上下文里剔除；新增 260k 字符总预算。实测上下文 344k→130k 字符、60→28 个文件。
 - 2026-11-26：**《锁链》改成封龙专属**：古龙分支不再给；封龙选「伸手，隔着门去摸」时两个结果节点都带 gainClue，所以**必得**（原来挂在 60% 的 byMutual 上，实机很难看见）。实测封龙 200/200 拿到、古龙 0/200。
 - 2026-11-26：**好感上限改成"单人上限"**：删除全局总封顶（用户确认那不是原意）；普通身份单人 100、龙烬余孤 80（`IdentityDef.npcAffinityCap`）。`addAffinity()` 超出丢弃、`applyEffectsCapped()` 统一 clamp，固定事件也绕不过。面板改为「好感总 X · 单人上限 80」。实测 8 人各 80、总量 640 不报错。

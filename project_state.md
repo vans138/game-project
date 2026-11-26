@@ -14,7 +14,8 @@
 - [x] **A 任务：负好感路径（古龙 -40 → -50 / 封龙 -10 → -20 → -45）→ 失控（每目标一次）→ 龙迫可达；期末考试设为 critical → 唤龙可达；《锁链》封龙专属**
 - [x] 死亡处理（失控致死 → `deadNpcs`：不进候选、面板"已故"、结局附言）
 - [x] 好感上限改成单人（普通 100 / 龙 80），删除全局总封顶
-- [ ] **下一步（用户已定）：继续补古龙线**——修「同月①/②重复」+ 加新事件（十一月裂痕 / 一月旧楼夜）+ 让《龙？》《锁链》影响结局
+- [x] **v9 三池模型（A/V）**：随机互动池 A / 小事件池 B / 世界事件池 C + `worldEvent` 阶段 + `weightModifiers` + 互动选项/节点 `effects`（另一个对话改的，已修好 typecheck 并补文档）
+- [ ] **下一步（用户已定）：继续补古龙线**——修「同月①/②重复」+ 加新事件（十一月裂痕 / 一月旧楼夜）+ 让《龙？》《锁链》影响结局 + 往池 B/C 填内容
 - [ ] 第 3 批：同框（samebox）机制
 - [ ] 第 4 批：私人目标 + 双层目标 + 好感系统精细化
 - [ ] 第 5 批：结局判定 + 局外轮回存档
@@ -36,6 +37,7 @@ cd "C:\Users\34903\game_project\script-br"
 - **玄幻身份**先做一个：**龙烬余孤**；身份因子随机二选一：`seal`（封龙，人类容器）/ `ancient`（古龙，本体）。
 - **不做显式身份状态机**（unaware/suspected/confirmed），靠事件选项 + 文本暗示。
 - **"线"统一叫"因子"**；后天因子（如「唤龙」）= 事件获得的，开局身份因子 = 开局定的。
+- **v9 A/V 模型**：因子分三类（身份/事件/信息）；事件机会三池（A 随机互动 / B 小事件 / C 世界事件，月初 `worldEvent` 阶段）；因子用 `weightModifiers`（`tierWeights` 改档位、`weightDelta` 改事件权重）调概率。旧 `factorPool/factorGroups/factorActive/setTerminate` 已删除。权威说明：[docs/state_model.md](docs/state_model.md)。
 - **好感上限 = 单人上限，没有全局总封顶**：普通身份 100；**龙烬余孤 80**（`IdentityDef.npcAffinityCap`，省略时用 `Script.affinityCap`）。`addAffinity()` 超出丢弃，`applyEffectsCapped()` 统一 clamp，固定事件也绕不过。
 - **死亡**：失控伤害到 `death` 档时对象进 `deadNpcs`——不进拉关系/龙迫候选、面板显示"已故"、结局附言；flag `killed:<npcId>`。
 - **失控每目标一局只触发一次**（`outOfControlTargets`），否则好感跌破 -50 会月月吞掉整月。

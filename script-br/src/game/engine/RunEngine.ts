@@ -1023,6 +1023,23 @@ export class RunEngine {
     if (this.state.finished) return this.snapshot()
     const ph = this.state.monthRuntime.phase
 
+    // UI 在"没有选项"时会发 __advance__；映射成当前阶段的默认继续动作，避免卡死
+    if (choiceId === '__advance__') {
+      const map: Record<string, string> = {
+        holidaySkip: CHOICE_SKIP,
+        worldEvent: 'world_next',
+        intro: 'intro_next',
+        feedback: 'feedback_next',
+        smallEvent: 'small_next',
+        interact1: 'interact_next',
+        interact2: 'interact_next',
+        summary: 'summary_next',
+      }
+      if (map[ph]) return this.choose(map[ph])
+      if (ph === 'fixedEvent') { this.toInteract1(); return this.emitAndSnap() }
+      return this.emitAndSnap()
+    }
+
     if (ph === 'holidaySkip') {
       if (choiceId === CHOICE_SKIP) this.advanceMonth()
       return this.emitAndSnap()

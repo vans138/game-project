@@ -21,6 +21,7 @@ export interface ClueItem {
 }
 
 export type GamePhase =
+  | 'worldEvent'
   | 'intro'
   | 'mainChoice'
   | 'feedback'
