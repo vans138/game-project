@@ -1,4 +1,12 @@
-import os, json, urllib.request, urllib.error, datetime, subprocess, re
+import os, sys, json, urllib.request, urllib.error, datetime, subprocess, re
+
+# Windows 控制台默认 GBK，遇到 ❌ / 🐉 这类字符会直接 UnicodeEncodeError 崩掉。
+# 统一把输入输出切成 UTF-8（失败就忽略，不影响主流程）。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 URL = "https://api.deepseek.com/chat/completions"
@@ -93,6 +101,23 @@ SAVE_RE = re.compile(
     re.MULTILINE | re.DOTALL
 )
 
+# PATCH：对已有文件做"锚点替换"，一段一段改，不必整份重发。
+# 这是改大文件（>200 行）唯一靠谱的方式：模型只写变动的几行。
+PATCH_BLOCK_RE = re.compile(
+    r'^<<<PATCH:([A-Za-z0-9_./\-]+)>>>[ \t]*\r?\n'
+    r'(.*?)'
+    r'^<<<END>>>[ \t]*$',
+    re.MULTILINE | re.DOTALL
+)
+
+# 续写标记的保护范围：SAVE / PATCH 块内部都属于"文件正文"，一个字符都不能动。
+PROTECTED_BLOCK_RE = re.compile(
+    r'^<<<(?:SAVE|PATCH):[A-Za-z0-9_./\-]+>>>[ \t]*\r?\n'
+    r'.*?'
+    r'^<<<END>>>[ \t]*$',
+    re.MULTILINE | re.DOTALL
+)
+
 # 结尾看起来"没写完"的字符（对代码文件的粗略哨兵）
 BAD_TAIL = ("+", "=", ":", "(", "{", "[", ",", "=>", "&&", "||", "?")
 
@@ -167,6 +192,139 @@ def extract_saves(text):
     return clean, saves
 
 
+# ---------- PATCH：增量修改 ----------
+class PatchError(Exception):
+    pass
+
+
+def parse_patch_hunks(body):
+    """把 PATCH 块体解析成 [(old, new), ...]。
+
+    块内格式（可多组，按顺序执行）：
+        <<<OLD>>>
+        要替换的原文（逐字，含缩进）
+        <<<NEW>>>
+        替换后的内容
+        <<<OLD>>>      ← 下一组
+        ...
+    """
+    lines = body.splitlines()
+    hunks, i = [], 0
+    while i < len(lines):
+        if lines[i].strip() != "<<<OLD>>>":
+            i += 1
+            continue
+        i += 1
+        old = []
+        while i < len(lines) and lines[i].strip() != "<<<NEW>>>":
+            old.append(lines[i])
+            i += 1
+        if i >= len(lines):
+            raise PatchError("这一组缺少 <<<NEW>>>")
+        i += 1
+        new = []
+        while i < len(lines) and lines[i].strip() != "<<<OLD>>>":
+            new.append(lines[i])
+            i += 1
+        hunks.append(("\n".join(old), "\n".join(new)))
+    if not hunks:
+        raise PatchError("PATCH 块里没有任何 <<<OLD>>>/<<<NEW>>> 组")
+    return hunks
+
+
+def read_text_raw(path):
+    """读文件并按原样保留换行符（CRLF 不要被转成 LF）。"""
+    with open(path, encoding="utf-8", newline="") as f:
+        return f.read()
+
+
+def write_text_raw(path, text):
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+
+
+def detect_eol(text):
+    return "\r\n" if "\r\n" in text else "\n"
+
+
+def to_eol(text, eol):
+    """模型输出统一是 \n；写回前换成目标文件自己的换行符。"""
+    return text.replace("\r\n", "\n").replace("\n", eol)
+
+
+def apply_one_patch(path, body):
+    """应用单个 PATCH 块。成功返回 hunk 数，失败抛 PatchError。"""
+    if ".." in path:
+        raise PatchError("路径非法")
+    full = os.path.normpath(os.path.join(BASE_DIR, path))
+    if not full.startswith(os.path.normpath(BASE_DIR) + os.sep):
+        raise PatchError("路径越界")
+    if not os.path.isfile(full):
+        raise PatchError("文件不存在（新建文件请用 SAVE）")
+
+    hunks = parse_patch_hunks(body)
+    original = read_text_raw(full)
+    eol = detect_eol(original)
+    new_text = original
+    for old, new in hunks:
+        old_e = to_eol(old, eol)
+        new_e = to_eol(new, eol)
+        count = new_text.count(old_e)
+        if count == 0:
+            first = (old.splitlines() or [""])[0][:40]
+            raise PatchError(f"找不到 OLD 原文（开头：{first!r}）；OLD 必须逐字一致，含缩进")
+        if count > 1:
+            raise PatchError(f"OLD 原文在文件里出现 {count} 次，不唯一；请多带几行上下文")
+        new_text = new_text.replace(old_e, new_e, 1)
+
+    # 能快速校验的格式，改完立刻验；改坏了直接回滚，绝不落盘
+    if path.endswith(".py"):
+        try:
+            compile(new_text, full, "exec")
+        except SyntaxError as e:
+            raise PatchError(f"改完语法错误，已回滚：{e.msg}（第 {e.lineno} 行）")
+    elif path.endswith(".json"):
+        try:
+            json.loads(new_text)
+        except Exception as e:
+            raise PatchError(f"改完 JSON 无效，已回滚：{e}")
+
+    write_text_raw(full, new_text)
+    return len(hunks)
+
+
+def extract_patches(text):
+    """应用回复里的全部 PATCH 块。返回 (清理后的文本, 已应用, 被拒)。"""
+    applied, rejected = [], []
+    patched_paths = []
+    for m in PATCH_BLOCK_RE.finditer(text):
+        path, body = m.group(1).strip(), m.group(2)
+        try:
+            n = apply_one_patch(path, body)
+        except PatchError as e:
+            rejected.append((path, str(e)))
+            continue
+        except Exception as e:  # 兜底：任何意外都不写坏文件
+            rejected.append((path, f"内部错误：{e}"))
+            continue
+        applied.append((path, n))
+        if path not in patched_paths:
+            patched_paths.append(path)
+
+    clean = PATCH_BLOCK_RE.sub("", text).strip()
+
+    for path, n in applied:
+        print(f"  [补丁] {path}（{n} 处）")
+    if rejected:
+        print("\n  ❌ 以下补丁被拒绝（文件未改动）：")
+        for p, r in rejected:
+            print(f"     - {p}：{r}")
+    if patched_paths:
+        git_commit_push("AI: 补丁 " + ", ".join(patched_paths))
+
+    return clean, applied, rejected
+
+
 # ---------- 续写标记（SAVE 块内一律不动）----------
 # 血泪教训：以前是对整条回复做 content.replace("<<<MORE>>>", "")，
 # 而回复里可能正好有"本脚本自己的源码"（含 <<<MORE>>> 字面量），
@@ -176,9 +334,9 @@ MAX_CONTINUATIONS = 8
 
 
 def split_outside_saves(text):
-    """把文本切成 [(片段, 是否在 SAVE 块内), ...]，保证块内内容不被改写。"""
+    """把文本切成 [(片段, 是否在 SAVE/PATCH 块内), ...]，保证块内内容不被改写。"""
     parts, pos = [], 0
-    for m in SAVE_RE.finditer(text):
+    for m in PROTECTED_BLOCK_RE.finditer(text):
         parts.append((text[pos:m.start()], False))
         parts.append((m.group(0), True))
         pos = m.end()
@@ -214,6 +372,20 @@ SYSTEM_PROMPT = """你是一位资深独立游戏设计师兼全栈游戏工程�
 - 普通对话不要用这个标记。
 - 标记必须【独占一行】，路径只能是英文/数字/下划线/斜杠/点/短横线，不要写中文路径，不要在行内举例时写出完整标记。
 
+【增量修改：优先用 PATCH，不要整份重发（重要）】
+- 只是改已有文件的几行/一小段时，用 PATCH，不要重发整个文件。
+- 格式（OLD/NEW 各占自己的行）：
+  <<<PATCH:相对路径>>>
+  <<<OLD>>>
+  （从当前文件里逐字复制的原文，含缩进）
+  <<<NEW>>>
+  （替换后的内容）
+  <<<END>>>
+- 一个 PATCH 块可以连续写多组 OLD/NEW（按顺序执行）；一次回复可以写多个 PATCH 块。
+- OLD 必须和文件内容逐字一致，并且在整个文件里只出现一次；找不到或匹配到多处会被拒绝，文件不会被改动。
+- .py 文件改完会自动做语法检查，语法错误直接回滚。
+- 只有新建文件、或整份文件基本重写时，才用 SAVE。
+
 【原则】不确定就问；MVP优先；代码要能直接跑；中文沟通。
 
 【续写约定（重要）】
@@ -223,7 +395,7 @@ SYSTEM_PROMPT = """你是一位资深独立游戏设计师兼全栈游戏工程�
 - 续写时从上次结尾接着写，不要重复已写内容。
 
 【单文件长度红线（重要）】
-- 单个 SAVE 块尽量控制在 200 行以内。超过 200 行的文件，请拆成多个小文件/模块，不要强行一个块写完。
+- 单个 SAVE 块尽量控制在 200 行以内。超过 200 行的文件，改它请用 PATCH；确实要整体重写，就先拆成多个小文件/模块。
 - 落盘脚本会对"疑似截断"的文件拒绝写入并转存到 .pending/（fail-safe）。
 """
 
@@ -335,12 +507,21 @@ def ask(msg):
                         "content": "继续，从上次结尾接着写，不要重复已写内容，写完用收尾标记结束。"})
 
     clean, saves = extract_saves(full_content)
+    clean, patches, patch_errors = extract_patches(clean)
     print(clean)
 
+    notes = []
     if saves:
         saved_list = ", ".join(p for p, _ in saves)
-        history.append({"role": "system",
-                        "content": f"[系统] 本轮尝试落盘：{saved_list}（疑似截断的已被拒绝并转存 .pending/）"})
+        notes.append(f"[系统] 本轮尝试落盘：{saved_list}（疑似截断的已被拒绝并转存 .pending/）")
+    if patches:
+        notes.append("[系统] 本轮已应用补丁：" +
+                     ", ".join(f"{p}（{n} 处）" for p, n in patches))
+    if patch_errors:
+        notes.append("[系统] 以下补丁被拒绝（文件未改动），请修正后重发：" +
+                     "; ".join(f"{p}（{r}）" for p, r in patch_errors))
+    if notes:
+        history.append({"role": "system", "content": "\n".join(notes)})
 
 
 # ---------- 启动 ----------
