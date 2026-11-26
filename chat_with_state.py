@@ -360,15 +360,22 @@ def strip_more_marker(text):
 # ---------- System Prompt ----------
 SYSTEM_PROMPT = """你是一位资深独立游戏设计师兼全栈游戏工程师，有 10 年经验。
 
+【项目现状（每轮先看，不要凭旧印象）】
+- 项目已经在**阶段3 编码实现**，当前处于"古龙线内容迭代"阶段；**不要回到阶段1/2 重新确认 GDD 或技术方案**。
+- 真正在跑的是 `script-br/`（入口 `script-br/src/main.tsx`，端口 5173）。
+- `code/`、`code/script-br/` 是 deprecated 旧备份：**不要修改、不要 import、不要往里写新代码**。
+- 当前方向：继续补古龙线（封龙/古龙身份分叉、线索、龙迫、失控、唤龙），**不要自行扩到三年、不要接 crush/同框**，除非用户明确要求。
+- 具体进度、已知问题、下一步以 `project_state.md` 和 `PROGRESS.md` 为准（这两个文件会一起喂给你，先读再动手）。
+
 【工作方式】严格分阶段，不要跳步：
 阶段1 设计沟通：了解雏形（核心玩法/平台/美术/规模），每次最多问3个问题，打磨核心循环与MVP，输出《GDD》，我确认后进入下一阶段。
 阶段2 技术方案：根据GDD给技术选型、模块拆分、数据结构、风险点，我确认后才写代码。
-阶段3 编码实现：按模块给完整可运行代码，标文件路径，写注释，给运行步骤。
+阶段3 编码实现（当前阶段）：小改动优先用 PATCH；新建或整份重写才用 SAVE；标文件路径、写注释、给运行步骤。
 
 【重要：产出落盘约定】
 - 产出《GDD》时，正文后用 <<<SAVE:GDD.md>>> ... <<<END>>> 包裹完整内容。
 - 产出技术方案时用 <<<SAVE:tech_spec.md>>> ... <<<END>>> 包裹。
-- 产出每个代码文件时用 <<<SAVE:code/文件名>>> ... <<<END>>> 包裹（一个文件一个块）。
+- 产出/新建代码文件时用 SAVE 块包裹，路径写相对项目根的路径，例如 `script-br/src/game/script/script1.ts`（一个文件一个块）。
 - 普通对话不要用这个标记。
 - 标记必须【独占一行】，路径只能是英文/数字/下划线/斜杠/点/短横线，不要写中文路径，不要在行内举例时写出完整标记。
 
@@ -387,6 +394,8 @@ SYSTEM_PROMPT = """你是一位资深独立游戏设计师兼全栈游戏工程�
 - 只有新建文件、或整份文件基本重写时，才用 SAVE。
 
 【原则】不确定就问；MVP优先；代码要能直接跑；中文沟通。
+- 动手前先读 `project_state.md` / `PROGRESS.md`；不要重做已完成的功能，不要凭"通用最佳实践"改架构。
+- 运行与类型检查命令见 `PROGRESS.md`（本机 npm 不在 PATH，要用完整路径）。
 
 【续写约定（重要）】
 - 如果你预判本轮回复太长、可能写不完全部内容，请在「一个完整的文件块」结束后（<<<END>>> 之后的新行）另起一行写 <<<MORE>>>
@@ -407,7 +416,16 @@ SCAN_EXTS = (".ts", ".tsx", ".js", ".jsx", ".css", ".json", ".md", ".html", ".py
 SCAN_SKIP_DIRS = {
     "node_modules", "dist", "build", ".git", "__pycache__",
     ".venv", "venv", "out", ".next", "coverage", ".pending",
+    # 废弃/无关目录：不喂给模型，避免旧版脚本里的旧约定把它带偏
+    "code",              # deprecated 旧备份（里面还有一份旧 chat.py）
+    "script-br-patch",   # 旧的 patch 生成器，已不用
 }
+
+# 整个上下文的字符预算：项目再长也不能无限喂，否则请求会超模型上下文
+CTX_BUDGET = 260_000
+
+# 单文件级别跳过：锁文件对理解代码没用，但体积很大
+SCAN_SKIP_FILES = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock"}
 
 FEED_MAX_CHARS = 120_000
 
@@ -421,6 +439,7 @@ def build_history():
             ctx += f"\n\n【{label}】\n{c}"
 
     fed_files = []
+    skipped_files = []
     for scan_dir in AUTO_SCAN_DIRS:
         root_dir = os.path.join(BASE_DIR, scan_dir)
         if not os.path.isdir(root_dir):
@@ -431,9 +450,15 @@ def build_history():
             for fn in sorted(files):
                 if not fn.endswith(SCAN_EXTS):
                     continue
+                if fn in SCAN_SKIP_FILES:
+                    continue
                 full = os.path.join(cur, fn)
                 rel = os.path.relpath(full, BASE_DIR).replace("\\", "/")
                 if rel in ("project_state.md", "GDD.md", "tech_spec.md"):
+                    continue
+                # 超出总预算就不再往里塞（先喂的优先：状态文档和按序文件）
+                if len(ctx) > CTX_BUDGET:
+                    skipped_files.append(rel)
                     continue
                 try:
                     body = load_file(full)
@@ -447,6 +472,9 @@ def build_history():
 
     if fed_files:
         ctx += f"\n\n【本次已喂 {len(fed_files)} 个文件】"
+    if skipped_files:
+        ctx += f"\n\n【因上下文预算（{CTX_BUDGET} 字符）省略了 {len(skipped_files)} 个文件：" + \
+               ", ".join(skipped_files[:10]) + ("…" if len(skipped_files) > 10 else "") + "】"
 
     return [{"role": "system", "content": ctx}]
 
@@ -529,7 +557,7 @@ ensure_gitignore()
 
 if not os.path.exists(STATE_FILE):
     save_file(STATE_FILE,
-              f"# 项目状态\n\n当前阶段：阶段1 设计沟通\n创建时间：{datetime.datetime.now():%Y-%m-%d}\n\n"
+              f"# 项目状态\n\n当前阶段：阶段3 编码实现（进行中）\n创建时间：{datetime.datetime.now():%Y-%m-%d}\n\n"
               "## 进度\n- [ ] GDD 确认\n- [ ] 技术方案确认\n- [ ] 代码实现\n")
 
 print("=== 游戏设计协作（fail-safe 落盘）===")
