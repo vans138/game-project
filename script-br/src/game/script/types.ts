@@ -90,36 +90,6 @@ export interface EventDef {
   data?: Record<string, unknown>
 }
 
-export type FactorId = string
-export interface FactorConflict {
-  title: string
-  parties: string[]
-  fog: number
-  solvePaths?: string[]
-}
-export interface FactorDef {
-  id: FactorId
-  title: string
-  conflict?: FactorConflict
-  data?: Record<string, unknown>
-}
-
-export type FactorMemberSpecial = 'terminate'
-export interface FactorGroupMember {
-  factorId: FactorId
-  chance: number
-  special?: FactorMemberSpecial
-}
-export type FactorGroupSpecial = 'future'
-export interface FactorGroup {
-  id: string
-  special?: FactorGroupSpecial
-  members: FactorGroupMember[]
-  data?: Record<string, unknown>
-}
-
-export interface FactorRuntime {}
-
 export type IdentityFactorId = 'seal' | 'ancient'
 
 export interface IdentityDef {
