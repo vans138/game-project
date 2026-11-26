@@ -9,11 +9,10 @@
 import type {
   Script,
   MonthDef,
-  FactorDef,
-  FactorGroup,
   IdentityDef,
   EventDef,
   InteractEvent,
+  SmallEventDef,
   ClueDef,
   AcquiredFactorDef,
 } from './types'
@@ -30,8 +29,12 @@ const identities: IdentityDef[] = [
   },
 ]
 
-const factorPool: FactorDef[] = []
-const factorGroups: FactorGroup[] = []
+// 小事件池 B（V2）：主选项之后抽，可能抽空
+const smallEvents: SmallEventDef[] = [
+  { id: 'se_blackbird', weight: 1, text: '课间，走廊尽头的窗子外面，有一只黑鸟一直盯着你看。' },
+  { id: 'se_note', weight: 1, text: '放学时你在储物柜里发现一张没有落款的纸条，只写了两个字：“小心。”' },
+  { id: 'se_dizzy', weight: 1, text: '某个午后你忽然头晕，眼前的课本一页页翻过去，像在快进。' },
+]
 
 const acquiredFactors: AcquiredFactorDef[] = [
   {
@@ -460,6 +463,8 @@ export const SCRIPT_1: Script = {
   timeline: buildTimeline(),
   events,
   interactEvents,
+  smallEvents,
+  worldEvents: [],
   clues,
   acquiredFactors,
   outcomes: [

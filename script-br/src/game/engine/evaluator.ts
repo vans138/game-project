@@ -32,7 +32,6 @@ export function evalCondition(cond: Condition | undefined, ctx: EvalContext): bo
     return (ctx.goalProgress[goal] ?? 0) >= v
   }
   if ('monthAtLeast' in cond) return ctx.month >= cond.monthAtLeast
-  if ('factorActive' in cond) return ctx.activeFactors.has(cond.factorActive)
   return false
 }
 
