@@ -79,6 +79,8 @@ export interface RunState {
   investigatedThisMonth: string | null
   coerceState: CoerceState | null
   coercedTargets: Set<string>
+  /** 已经"失控"过的对象：每人对你只会失控一次，避免好感一旦跌破 -50 就月月吞掉整月 */
+  outOfControlTargets: Set<string>
   pendingLakeDragonSettle: boolean
 }
 
@@ -148,7 +150,8 @@ export class RunEngine {
       },
       interact: null, phaseHint: '', monthLog: [], stageNarrative: undefined,
       firedOnceEvents: new Set(), investigatedThisMonth: null,
-      coerceState: null, coercedTargets: new Set(), pendingLakeDragonSettle: false,
+      coerceState: null, coercedTargets: new Set(), outOfControlTargets: new Set(),
+      pendingLakeDragonSettle: false,
     }
     this.enterMonth(this.state.monthIndex)
   }
@@ -385,9 +388,14 @@ export class RunEngine {
     let worstValue = 0
     for (const id of Object.keys(aff)) {
       const v = aff[id]
-      if (v <= -50 && v < worstValue) { worstValue = v; worstId = id }
+      if (v <= -50 && v < worstValue && !this.state.outOfControlTargets.has(id)) {
+        worstValue = v
+        worstId = id
+      }
     }
     if (!worstId) return false
+    // 每人对你只会失控一次；否则好感一旦跌破 -50，就会月月吞掉整月
+    this.state.outOfControlTargets.add(worstId)
     this.state.monthRuntime.opportunityUsed = 2
     this.state.monthRuntime.phase = 'interact1'
     this.state.phaseHint = '失控'
@@ -899,6 +907,14 @@ export class RunEngine {
       const ev = this.eventById(this.state.monthRuntime.fixedEventId)
       if (choiceId === '__call_dragon__') {
         this.log('你应答了那个呼唤。有什么东西在你身体里伸了个懒腰。')
+        this.applyChoice({
+          effects: [
+            { type: 'powerDelta', value: 5 },
+            { type: 'goalProgress', target: 'g_truth', value: 2 },
+            { type: 'flag', target: 'answered_the_call' },
+            { type: 'log', text: '考场的灯管嗡了一声，随即恢复安静。你听见自己的心跳变成了两下。' },
+          ],
+        })
         if (this.checkOutOfControl()) return this.emitAndSnap()
         this.toInteract1()
         return this.emitAndSnap()

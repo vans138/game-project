@@ -77,6 +77,24 @@ const events: EventDef[] = [
         { type: 'flag', target: 'hid_presence' },
         { type: 'log', text: '你觉得阳光有点刺。人群里有人下意识地往远离你的方向退了半步。' },
       ] },
+
+      // ---- 负好感路径 ①：开学就给人脸色（古龙线的"疏远"从第一天开始）----
+      { id: 'c_push_away', text: '把过来搭话的人冷冷推开', effects: [
+        { type: 'affinity', target: 'npc_qiu', value: -25 },
+        { type: 'flag', target: 'pushed_qiu_away' },
+        { type: 'log', text: '邱同学的笑僵在脸上。TA 退后半步，把手插回校服口袋里，没再说话。' },
+      ] },
+      { id: 'c_swallow', text: '把那点烦躁咽回去', require: { identityFactorIs: 'seal' }, effects: [
+        { type: 'affinity', target: 'npc_qiu', value: -10 },
+        { type: 'flag', target: 'swallowed_irritation' },
+        { type: 'log', text: '你把指甲掐进掌心。声音停了。邱同学看了你一眼，什么也没问。' },
+      ] },
+      { id: 'c_show_eyes', text: '让 TA 看见你眼睛里的东西', require: { identityFactorIs: 'ancient' }, effects: [
+        { type: 'affinity', target: 'npc_qiu', value: -40 },
+        { type: 'goalProgress', target: 'g_truth', value: 1 },
+        { type: 'flag', target: 'leaked_eyes_once' },
+        { type: 'log', text: '只有一瞬间。邱同学整个人僵住，手里的校歌单掉在地上。\nTA 后退时撞到了后面的人。' },
+      ] },
     ],
   },
 
@@ -101,6 +119,24 @@ const events: EventDef[] = [
         { type: 'goalProgress', target: 'g_truth', value: 1 },
         { type: 'goalProgress', target: 'g_bond', value: 1 },
         { type: 'log', text: '你把那些自己也说不清的错觉讲了出来。TA 认真地听完。' },
+      ] },
+
+      // ---- 负好感路径 ②：把话说到最绝 ----
+      { id: 'c_cut', text: '“以后别再跟着我。”', effects: [
+        { type: 'affinity', target: 'npc_qiu', value: -30 },
+        { type: 'flag', target: 'cut_qiu_off' },
+        { type: 'log', text: '你说完就走了。邱同学在后面叫了你的名字，你没有回头。' },
+      ] },
+      { id: 'c_silent_cut', text: '沉默着走完这段路', require: { identityFactorIs: 'seal' }, effects: [
+        { type: 'affinity', target: 'npc_qiu', value: -20 },
+        { type: 'flag', target: 'silent_walk' },
+        { type: 'log', text: '你们一路没再说话。到宿舍楼下，TA 说了句“早点睡”，先上了楼。' },
+      ] },
+      { id: 'c_show_eyes_again', text: '不再遮，让 TA 看清楚', require: { identityFactorIs: 'ancient' }, effects: [
+        { type: 'affinity', target: 'npc_qiu', value: -50 },
+        { type: 'goalProgress', target: 'g_truth', value: 1 },
+        { type: 'flag', target: 'eyes_seen_fully' },
+        { type: 'log', text: '路灯下，你的影子比人多出一截。\n邱同学一句话都没说出来，转身跑了。' },
       ] },
     ],
   },
@@ -151,12 +187,26 @@ const events: EventDef[] = [
         { type: 'affinity', target: 'npc_moon', value: 10 },
         { type: 'log', text: '月亮学姐站在走廊尽头，笑了一下，转身消失在拐角。' },
       ] },
+
+      // ---- 负好感路径 ③：封龙压久了会一次性炸开；古龙则学会回应那个声音 ----
+      { id: 'c_vent', text: '把攒了一路的火，全砸在身边的人身上', require: { identityFactorIs: 'seal' }, effects: [
+        { type: 'affinity', target: 'npc_qiu', value: -45 },
+        { type: 'flag', target: 'vented_on_qiu' },
+        { type: 'log', text: '你听见自己在说很重的话。雪落在 TA 的肩上，TA 没有还嘴。' },
+      ] },
+      { id: 'c_answer_snow', text: '对着空走廊，应一声那个叫你的声音', require: { identityFactorIs: 'ancient' }, effects: [
+        { type: 'powerDelta', value: 5 },
+        { type: 'goalProgress', target: 'g_truth', value: 1 },
+        { type: 'flag', target: 'answered_snow_voice' },
+        { type: 'log', text: '你应了一声。雪在半空停住，走廊尽头的灯同时暗了一下。' },
+      ] },
     ],
   },
 
   {
     id: 'e_final_exam', kind: 'fixed', season: 'school', title: '期末考试',
-    tier: 'common', valence: { favorable: 0.8, unfavorable: 0.2 },
+    // critical：古龙线的第一个"危急事件"——拥有后天因子「唤龙」时，这里会多出【唤龙】选项
+    tier: 'critical', valence: { favorable: 0.8, unfavorable: 0.2 },
     narrative:
       '一年最重的那场考试。窗外的树在风里响。\n' +
       '答到最后一题时，你忽然清晰地想起来了：去年这个时候，你也坐在这张桌子前。',
@@ -175,6 +225,19 @@ const events: EventDef[] = [
         { type: 'goalProgress', target: 'g_truth', value: 2 },
         { type: 'affinity', target: 'npc_he', value: 8 },
         { type: 'log', text: '监考席后的何老师整个人僵住。她没有回答，只是在你交卷后，把你单独留了下来。' },
+      ] },
+
+      // ---- 期末的身份分叉：封龙按住两个心跳，古龙让它替自己写 ----
+      { id: 'c_both_hearts', text: '按住两个心跳，一题一题写下去', require: { identityFactorIs: 'seal' }, effects: [
+        { type: 'goalProgress', target: 'g_truth', value: 1 },
+        { type: 'flag', target: 'held_both_hearts' },
+        { type: 'log', text: '你数着两个心跳，把每道题都写了。交卷时，手心全是汗。' },
+      ] },
+      { id: 'c_shed_skin', text: '让那一刻的自己出来，把卷子写完', require: { identityFactorIs: 'ancient' }, effects: [
+        { type: 'powerDelta', value: 5 },
+        { type: 'goalProgress', target: 'g_truth', value: 2 },
+        { type: 'flag', target: 'shed_skin_exam' },
+        { type: 'log', text: '笔尖划过纸面，快得不像你在写。监考老师一直没敢往这边看。' },
       ] },
     ],
   },
@@ -197,6 +260,23 @@ const clues: ClueDef[] = [
       {
         title: '确认',
         text: '你在旧楼镜子里试着重复那次的感觉。镜中的你，瞳孔变成了竖的，维持了很短的一瞬。\n你知道：你体内确实有东西能被勾出来。问题只是——它是你，还是不是你。',
+      },
+    ],
+  },
+
+  // 第二条线索：来自旧楼那扇门（古龙线：锁链 / 被锁住的到底是谁）
+  {
+    id: 'clue_chain',
+    title: '锁链',
+    fromEventId: 'it_oldfloor',
+    stages: [
+      {
+        title: '痕迹',
+        text: '你想起湖底那条东西身上，一圈一圈锈色的东西。\n它们不像伤，更像束缚。',
+      },
+      {
+        title: '推想',
+        text: '如果它是被锁住的，那把锁是谁上的？\n——又或者，被锁在里面的，从来不是它。',
       },
     ],
   },
@@ -313,14 +393,20 @@ const interactEvents: InteractEvent[] = [
         {
           text: '推门进去', requires: { identityFactor: 'ancient' },
           next: {
-            byMutual: { text: '门开了。门后没有人——门后是你自己，背对着，慢慢转过头。' },
+            byMutual: {
+              text: '门开了。门后没有人——门后是你自己，背对着，慢慢转过头。',
+              gainClue: 'clue_chain',
+            },
             byOneSide: { text: '门推到一半就停住了。光从缝里流出来，照在你脚背上。' },
           },
         },
         {
           text: '伸手，隔着门去摸', requires: { identityFactor: 'seal' },
           next: {
-            byMutual: { text: '门后传来一声很轻的抓挠，像有什么被困在里面，认出了你。' },
+            byMutual: {
+              text: '门后传来一声很轻的抓挠，像有什么被困在里面，认出了你。',
+              gainClue: 'clue_chain',
+            },
             byOneSide: { text: '你的手掌贴上门，什么都没有发生。凉意顺着掌心往上爬。' },
           },
         },
@@ -371,7 +457,15 @@ export const SCRIPT_1: Script = {
   clues,
   acquiredFactors,
   outcomes: [
-    { id: 'o_default', title: '【暂时】学期未完', narrative: '这一段结束了。', minGoalRatio: 0 },
+    {
+      id: 'o_default',
+      title: '【第一学期 · 完】',
+      narrative:
+        '第一学期结束了。\n' +
+        '关于体内那个东西，你只确定一件事：它还在。\n\n' +
+        '（后续内容在做）',
+      minGoalRatio: 0,
+    },
   ],
   factorPool,
   factorGroups,
