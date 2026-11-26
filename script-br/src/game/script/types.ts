@@ -1,11 +1,22 @@
-// 剧本数据层类型（v8）
-// 相对 v7 变更：
-//   1) 事件双维度：tier（难度 common/rare/critical）+ valence（倾向权重表，可同时有利不利）
-//   2) 选项结果概率：Choice.outcomes（按权重抽一套 effects 执行），effects 保留为单套 100%
-//   3) 结果概率也受状态调制（把 outcomes 权重乘修饰器）
-//   4) 线索改名后无结构变化；湖面事件结束时给后天因子「唤龙」+ 战力提升，通过 effects 落地
-//   5) 新增后天因子（acquiredFactors）相关类型
-//   6) 新增龙迫（dragonCoerce）状态：目标本月行动失效 + 状态修饰
+// 剧本数据层类型（v9）
+//
+// ===== 核心设计公理：A / V 模型（详见 docs/state_model.md）=====
+//
+//   状态 A（因子集合）——三类，按「获得途径」划分：
+//     · 身份因子 IdentityFactor：只能由开局选的身份获得（如 龙烬余孤 → seal / ancient）
+//     · 事件因子 EventFactor  ：只能靠达成某些事件获得（如 唤龙）
+//     · 信息因子 InfoFactor   ：随时变化的状态，是事件判定的输入（月、好感、战力、flag、目标进度）
+//
+//   动作 V（= 事件发生的机会，共三个发生点）：
+//     · V1 主选项后的随机互动机会① / ② → 在【随机互动池 A】interactEvents 里抽
+//     · V2 主选项执行完后的小事件     → 在【小事件池 B】smallEvents 里抽（可能抽空）
+//     · V3 每月开始                   → 在【世界事件池 C】worldEvents 里抽（可能抽空）
+//
+//   结果：事件发生 / 改变 / 结束 + 获得事件因子 + 改变信息因子
+//
+//   因子（A）可以调制三池里每个事件的概率：
+//     · 可以改「难度档位分布」（common/rare/critical 的权重）
+//     · 也可以改「同一档内某个具体事件的权重」
 
 export interface CustomCondition { type: 'custom'; kind: string; payload?: Record<string, unknown> }
 export interface CustomEffect { type: 'custom'; kind: string; payload?: Record<string, unknown> }
@@ -18,7 +29,6 @@ export type Condition =
   | { flag: string }
   | { goalProgressAtLeast: [goalId: string, value: number] }
   | { monthAtLeast: number }
-  | { factorActive: string }
   | { identityFactorIs: 'seal' | 'ancient' }
   | CustomCondition
 
@@ -28,9 +38,8 @@ export type Effect =
   | { type: 'flag'; target: string }
   | { type: 'goalProgress'; target: string; value: number }
   | { type: 'log'; text: string }
-  | { type: 'setTerminate'; groupId: string; value: 0 | 1 }
   | { type: 'gainClue'; clueId: string }
-  // v8 新增：战力提升、后天因子获得
+  // v8：战力提升、事件因子获得
   | { type: 'powerDelta'; value: number }
   | { type: 'acquireFactor'; factorId: string }
   | CustomEffect
@@ -168,7 +177,7 @@ export interface MonthDef {
   silentStudy?: boolean
 }
 
-// ---------- 随机互动事件 ----------
+// ---------- 随机互动事件（池 A） ----------
 export type InteractKind = 'short' | 'maybeLong' | 'long'
 
 export interface InteractRequires {
@@ -177,9 +186,25 @@ export interface InteractRequires {
   identityFactor?: IdentityFactorId
 }
 
+/**
+ * 因子对概率的调制。
+ * 两个层级可分别调：
+ *   · tierWeights  —— 改「难度档位分布」的权重（common/rare/critical）
+ *   · weightDelta  —— 改「同一档内这个事件本身」的权重（正负都可）
+ * 条件不满足时整条 modifier 不生效。
+ */
+export interface WeightModifier {
+  /** 见 Condition；同一事件可挂多条，全部匹配的才叠加 */
+  when?: Condition
+  tierWeights?: Partial<Record<EventTier, number>>
+  weightDelta?: number
+}
+
 export interface InteractChoice {
   text: string
   requires?: InteractRequires
+  /** v9：走到这一选项时应用的效果（好感/flag/目标/战力/线索/事件因子） */
+  effects?: Effect[]
   next?: InteractNode | { byMutual: InteractNode; byOneSide: InteractNode }
 }
 
@@ -188,6 +213,8 @@ export interface InteractNode {
   choices?: InteractChoice[]
   chance?: { p: number; ifHit: InteractNode; ifMiss: InteractNode }
   gainClue?: string
+  /** v9：进入这个节点时应用的效果 */
+  effects?: Effect[]
 }
 
 export interface InteractEvent {
@@ -202,6 +229,39 @@ export interface InteractEvent {
   tier: EventTier
   /** v8：倾向权重 */
   valence: Valence
+  /** v9：因子对这个事件概率的调制（档位 + 事件权重） */
+  weightModifiers?: WeightModifier[]
+  /** v9：抽中这个事件时，强制占用几次随机互动机会（默认由 kind 决定；显式写则覆盖） */
+  opportunityCost?: 0 | 1 | 2
+}
+
+// ---------- 小事件（池 B） ----------
+// V2：主选项执行完后，在小事件池里抽；可能抽空。
+export interface SmallEventDef {
+  id: string
+  weight: number
+  /** 文本（多段用 \n） */
+  text: string
+  /** 出现条件（不满足不进池） */
+  require?: Condition
+  /** 抽中时应用的效果 */
+  effects?: Effect[]
+  /** v9：因子对这个事件概率的调制 */
+  weightModifiers?: WeightModifier[]
+}
+
+// ---------- 世界事件（池 C） ----------
+// V3：每月开始时在世界事件池里抽；可能抽空。抽中通常会给「事件因子」。
+export interface WorldEventDef {
+  id: string
+  weight: number
+  title: string
+  text: string
+  require?: Condition
+  effects?: Effect[]
+  weightModifiers?: WeightModifier[]
+  /** 是否一局只触发一次（默认 true） */
+  once?: boolean
 }
 
 // ---------- 线索 ----------
@@ -220,8 +280,9 @@ export interface ClueDef {
 // ---------- 伤害 ----------
 export type DamageTier = 'none' | 'light' | 'heavy' | 'death'
 
-// ---------- 后天因子 ----------
-// 后天因子 = 不是开局定的身份因子，而是通过各种事件获得的"能力/状态"
+// ---------- 事件因子 ----------
+// 事件因子 = 只能靠达成某些事件获得的能力/状态（如「唤龙」）。
+// 与「身份因子」（开局获得）相对；运行态存在 PlayerRuntime.acquiredFactors。
 export interface AcquiredFactorDef {
   id: string
   name: string
@@ -237,14 +298,18 @@ export interface Script {
   roles: Role[]
   npcs: NpcDef[]
   timeline: MonthDef[]
+  /** 固定事件（挂在 MonthDef.fixedEvent 上） */
   events: EventDef[]
   goals: GoalDef[]
   outcomes: OutcomeDef[]
-  factorPool: FactorDef[]
-  factorGroups: FactorGroup[]
+  /** 随机互动池 A（V1） */
   interactEvents: InteractEvent[]
+  /** 小事件池 B（V2） */
+  smallEvents: SmallEventDef[]
+  /** 世界事件池 C（V3） */
+  worldEvents: WorldEventDef[]
   clues: ClueDef[]
-  /** v8：后天因子池 */
+  /** 事件因子池 */
   acquiredFactors: AcquiredFactorDef[]
   /** 默认"单人好感上限"（身份可用 npcAffinityCap 覆盖；没有全局总封顶） */
   affinityCap: number
