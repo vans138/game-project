@@ -243,9 +243,71 @@ export class RunEngine {
       this.state.monthRuntime.phase = 'holidaySkip'
       this.state.phaseHint = '假期'
     } else {
-      this.state.monthRuntime.phase = 'intro'
-      this.state.phaseHint = '本月开始'
+      // V3：月初抽世界事件（可能抽空）。抽中则先播世界事件，再进 intro。
+      this.state.worldEventId = this.rollWorldEvent()
+      if (this.state.worldEventId) {
+        this.state.monthRuntime.phase = 'worldEvent'
+        this.state.phaseHint = '世界事件'
+      } else {
+        this.state.monthRuntime.phase = 'intro'
+        this.state.phaseHint = '本月开始'
+      }
     }
+  }
+
+  // ---------- V3：世界事件池 C ----------
+  /** 在池 C 里抽一个世界事件，抽空返回 null */
+  private rollWorldEvent(): string | null {
+    const pool = this.script.worldEvents
+    if (!pool.length) return null
+    const ctx = this.ctx()
+    const eligible = pool.filter((e) => {
+      if (e.once !== false && this.state.firedWorldEvents.has(e.id)) return false
+      return evalCondition(e.require, ctx)
+    })
+    if (!eligible.length) return null
+    const weights = eligible.map((e) => this.effectiveWeight(e.weight, e.weightModifiers, ctx))
+    const idx = this.rng.weightedIndex(weights)
+    if (idx < 0) return null
+    return eligible[idx].id
+  }
+
+  // ---------- 因子调概率：统一工具 ----------
+  /**
+   * 因子调制后的有效权重。
+   * 只应用匹配条件的 weightDelta（改事件自身权重），返回 >=0。
+   */
+  private effectiveWeight(
+    base: number,
+    mods: WeightModifier[] | undefined,
+    ctx: EvalContext,
+  ): number {
+    let w = base
+    if (mods) {
+      for (const m of mods) {
+        if (!evalCondition(m.when, ctx)) continue
+        if (m.weightDelta) w += m.weightDelta
+      }
+    }
+    return Math.max(0, w)
+  }
+
+  /** 把因子对「难度档位分布」的调制叠进 TierWeights（条件不满足的跳过） */
+  private applyTierWeightMods(
+    weights: TierWeights,
+    mods: WeightModifier[] | undefined,
+    ctx: EvalContext,
+  ): TierWeights {
+    if (!mods) return weights
+    const out = { ...weights }
+    for (const m of mods) {
+      if (!evalCondition(m.when, ctx)) continue
+      if (!m.tierWeights) continue
+      if (m.tierWeights.common) out.common += m.tierWeights.common
+      if (m.tierWeights.rare) out.rare += m.tierWeights.rare
+      if (m.tierWeights.critical) out.critical += m.tierWeights.critical
+    }
+    return out
   }
 
   private handleMainChoice(choiceId: string) {
