@@ -38,8 +38,8 @@ function toView(s: Snapshot): GameView {
     outcomeTitle: s.outcomeTitle,
     outcomeNarrative: s.outcomeNarrative,
     affinity: s.affinityPanel
-      .filter((p) => p.value !== 0)
-      .map((p) => ({ name: npcName(p.id), value: p.value })),
+      .filter((p) => p.value !== 0 || p.dead)
+      .map((p) => ({ name: npcName(p.id), value: p.value, dead: p.dead })),
     affinityTotal: s.affinityTotal,
     affinityCap: s.affinityCap,
     identityName: s.identityName,
@@ -90,7 +90,7 @@ export function createLocalSource(): GameSource {
       finished: false,
       affinity: [],
       affinityTotal: 0,
-      affinityCap: SCRIPT_1.affinityCap,
+      affinityCap: SCRIPT_1.identities[0]?.npcAffinityCap ?? SCRIPT_1.affinityCap,
       identityName: first?.name ?? '',
       isEventMonth: false,
       clues: [],

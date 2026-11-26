@@ -119,6 +119,11 @@ export interface IdentityDef {
   desc: string
   identityFactorPool: IdentityFactorId[]
   basePower: number
+  /**
+   * 该身份下，单个 NPC 对玩家的好感上限。
+   * 省略则用 Script.affinityCap（默认 100）；"龙"只有 80——没人能和一条龙真正亲近。
+   */
+  npcAffinityCap?: number
 }
 
 export interface NpcDef {
@@ -241,5 +246,6 @@ export interface Script {
   clues: ClueDef[]
   /** v8：后天因子池 */
   acquiredFactors: AcquiredFactorDef[]
+  /** 默认"单人好感上限"（身份可用 npcAffinityCap 覆盖；没有全局总封顶） */
   affinityCap: number
 }

@@ -25,6 +25,8 @@ const identities: IdentityDef[] = [
     desc: '世间最后一条血脉驳杂的龙。你不知道自己是被封印的容器，还是被封印者本身。',
     identityFactorPool: ['seal', 'ancient'],
     basePower: 60,
+    // 龙和其他目标最多 80：没人能和一条龙真正亲近到 100
+    npcAffinityCap: 80,
   },
 ]
 

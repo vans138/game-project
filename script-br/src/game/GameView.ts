@@ -8,6 +8,8 @@ export interface GameChoice {
 export interface AffinityItem {
   name: string
   value: number
+  /** 已故：不再能拉关系/被龙迫，也不占好感额度 */
+  dead?: boolean
 }
 
 export interface ClueItem {

@@ -81,6 +81,8 @@ export interface RunState {
   coercedTargets: Set<string>
   /** 已经"失控"过的对象：每人对你只会失控一次，避免好感一旦跌破 -50 就月月吞掉整月 */
   outOfControlTargets: Set<string>
+  /** 已经死亡的对象：不再出现在拉关系/龙迫候选里，也不占好感总额度 */
+  deadNpcs: Set<string>
   pendingLakeDragonSettle: boolean
 }
 
@@ -98,7 +100,7 @@ export interface Snapshot {
   finished: boolean
   outcomeTitle?: string
   outcomeNarrative?: string
-  affinityPanel: { id: string; value: number }[]
+  affinityPanel: { id: string; value: number; dead: boolean }[]
   affinityTotal: number
   affinityCap: number
   identityName: string
@@ -151,6 +153,7 @@ export class RunEngine {
       interact: null, phaseHint: '', monthLog: [], stageNarrative: undefined,
       firedOnceEvents: new Set(), investigatedThisMonth: null,
       coerceState: null, coercedTargets: new Set(), outOfControlTargets: new Set(),
+      deadNpcs: new Set(),
       pendingLakeDragonSettle: false,
     }
     this.enterMonth(this.state.monthIndex)
@@ -248,16 +251,17 @@ export class RunEngine {
       this.state.bondTargetId = targetId
       const npc = this.script.npcs.find((n) => n.id === targetId)
       const bump = npc?.relation === '友' ? 8 : npc?.relation === '尊' ? 5 : 4
-      const before = this.state.player.affinity[targetId] ?? 0
-      this.state.player.affinity[targetId] = before + bump
-      this.enforceAffinityCap()
-      const after = this.state.player.affinity[targetId] ?? 0
+      const gained = this.addAffinity(targetId, bump)
       this.state.feedback = {
         self: `你试着和${npc?.name ?? '某人'}多待了一会儿。` + (npc?.relation === '友' ? '你们聊得比想象中轻松。' : ''),
         peers: '班里同学对此有点好奇。',
         special: npc?.relation === '谜' ? 'TA 看你的眼神，比往常多停留了一秒。' : undefined,
       }
-      this.log(`好感 · ${npc?.name ?? targetId} ${after - before >= 0 ? '+' : ''}${after - before}`)
+      this.log(
+        gained > 0
+          ? `好感 · ${npc?.name ?? targetId} +${gained}`
+          : `好感 · ${npc?.name ?? targetId} 已到上限（${this.npcAffinityCap()}），这次没能再拉近`
+      )
     } else if (choiceId === 'study') {
       this.state.mainChoice = 'study'
       this.state.feedback = { self: '你把这个月大部分精力放在了书本上。', peers: '班里没什么大事。' }
@@ -317,14 +321,33 @@ export class RunEngine {
     this.state.phaseHint = '反馈'
   }
 
-  private enforceAffinityCap() {
-    const cap = this.script.affinityCap
+  // ---------- 好感：只做"单人上限"，没有全局总封顶 ----------
+  /** 当前身份下，单个 NPC 对玩家的好感上限（普通 100；"龙" 80） */
+  private npcAffinityCap(): number {
+    const identity = this.script.identities.find((i) => i.id === this.state.player.identityId)
+    return identity?.npcAffinityCap ?? this.script.affinityCap
+  }
+
+  /**
+   * 加好感：只受"单人上限"约束（超出部分丢弃），负向照常生效、不低于 0。
+   * 返回实际增加量（用于日志）。
+   */
+  private addAffinity(target: string, delta: number): number {
     const aff = this.state.player.affinity
-    let positiveSum = 0
-    for (const k of Object.keys(aff)) positiveSum += Math.max(0, aff[k])
-    if (positiveSum <= cap) return
-    const ratio = cap / positiveSum
-    for (const k of Object.keys(aff)) if (aff[k] > 0) aff[k] = Math.floor(aff[k] * ratio)
+    const cap = this.npcAffinityCap()
+    const before = aff[target] ?? 0
+    const next = Math.max(0, Math.min(cap, before + delta))
+    aff[target] = next
+    return next - before
+  }
+
+  /** 把所有 NPC 的好感夹到"单人上限"内（applyEffects 之后调用） */
+  private clampAffinityToCap(): void {
+    const aff = this.state.player.affinity
+    const cap = this.npcAffinityCap()
+    for (const id of Object.keys(aff)) {
+      if (aff[id] > cap) aff[id] = cap
+    }
   }
 
   // ---------- 小事件 ----------
@@ -388,7 +411,9 @@ export class RunEngine {
     let worstValue = 0
     for (const id of Object.keys(aff)) {
       const v = aff[id]
-      if (v <= -50 && v < worstValue && !this.state.outOfControlTargets.has(id)) {
+      if (v <= -50 && v < worstValue &&
+          !this.state.outOfControlTargets.has(id) &&
+          !this.state.deadNpcs.has(id)) {
         worstValue = v
         worstId = id
       }
@@ -419,6 +444,12 @@ export class RunEngine {
       '你体内有什么东西冲了出来，快得你自己都没反应过来。\n' + dmgText + '\n' + powerNote
     this.log(`【失控 · ${targetName}】`)
     this.log(dmgText)
+    if (dmg.tier === 'death') {
+      this.state.deadNpcs.add(worstId)
+      this.state.player.flags.add(`killed:${worstId}`)
+      this.log(`【死亡 · ${targetName}】`)
+      this.log(`${targetName} 再也没有站起来。这件事不会被记进任何校方文件里。`)
+    }
     rt.pendingChoices = [{ id: 'oc_next', text: '……', src: { text: '……' } }]
     return true
   }
@@ -504,8 +535,23 @@ export class RunEngine {
       })
   }
 
-  private applyChoice(choice: { effects?: Effect[]; outcomes?: ChoiceOutcome[] }) {
+  /**
+   * 统一入口：应用一组效果，并把好感夹到"单人上限"内。
+   * 所有来源（固定事件/选项/结算）都走这条路，避免有的路径绕过上限。
+   */
+  private applyEffectsCapped(effects: Effect[]): void {
     const ctx = this.ctx()
+    const r = applyEffects(effects, ctx)
+    this.commitCtx(ctx)
+    this.clampAffinityToCap()
+    for (const l of r.logs) this.log(l)
+    for (const cid of r.gainedClues) {
+      acquireClue(this.state.player.clueRuntime, cid)
+      this.logGainClue(cid)
+    }
+  }
+
+  private applyChoice(choice: { effects?: Effect[]; outcomes?: ChoiceOutcome[] }) {
     if (choice.outcomes && choice.outcomes.length > 0) {
       const fav: ChoiceOutcome[] = []
       const unf: ChoiceOutcome[] = []
@@ -528,45 +574,25 @@ export class RunEngine {
         const chosen = idx >= 0 ? bucket[idx] : bucket[0]
         if (chosen) {
           if (chosen.note) this.log(chosen.note)
-          const r = applyEffects(chosen.effects, ctx)
-          this.commitCtx(ctx)
-          for (const l of r.logs) this.log(l)
-          for (const cid of r.gainedClues) {
-            acquireClue(this.state.player.clueRuntime, cid)
-            this.logGainClue(cid)
-          }
+          this.applyEffectsCapped(chosen.effects)
         }
       }
       return
     }
     if (choice.effects && choice.effects.length) {
-      const r = applyEffects(choice.effects, ctx)
-      this.commitCtx(ctx)
-      for (const l of r.logs) this.log(l)
-      for (const cid of r.gainedClues) {
-        acquireClue(this.state.player.clueRuntime, cid)
-        this.logGainClue(cid)
-      }
+      this.applyEffectsCapped(choice.effects)
     }
   }
 
   private settleLakeDragon() {
     if (!this.state.pendingLakeDragonSettle) return
     this.state.pendingLakeDragonSettle = false
-    const ctx = this.ctx()
-    const effects: Effect[] = [
+    this.applyEffectsCapped([
       { type: 'gainClue', clueId: 'clue_dragon' },
       { type: 'powerDelta', value: 10 },
       { type: 'acquireFactor', factorId: 'acq_call_dragon' },
       { type: 'log', text: '掌心那道痕还没愈合，你就知道：有什么东西在你体内醒了。' },
-    ]
-    const r = applyEffects(effects, ctx)
-    this.commitCtx(ctx)
-    for (const l of r.logs) this.log(l)
-    for (const cid of r.gainedClues) {
-      acquireClue(this.state.player.clueRuntime, cid)
-      this.logGainClue(cid)
-    }
+    ])
     if (this.state.player.acquiredFactors.has('acq_call_dragon')) {
       const af = this.script.acquiredFactors.find((a) => a.id === 'acq_call_dragon')
       if (af) this.log(`🧬 你获得了后天因子「${af.name}」`)
@@ -646,21 +672,31 @@ export class RunEngine {
     this.state.phaseHint = '结束'
     const o = this.script.outcomes[0]
     this.lastOutcomeTitle = o?.title
-    this.lastOutcomeNarrative = o?.narrative
+    const deadNames = [...this.state.deadNpcs].map((id) => this.npcName(id))
+    let narrative = o?.narrative ?? ''
+    if (deadNames.length > 0) {
+      narrative += `\n\n这个学期，${deadNames.join('、')}没能走到最后。`
+    }
+    this.lastOutcomeNarrative = narrative
   }
 
   private coerceCandidates(): string[] {
     const aff = this.state.player.affinity
-    return Object.keys(aff).filter((id) => aff[id] <= -50 && !this.state.coercedTargets.has(id))
+    return Object.keys(aff).filter(
+      (id) => aff[id] <= -50 &&
+        !this.state.coercedTargets.has(id) &&
+        !this.state.deadNpcs.has(id)
+    )
   }
 
   // ---------- 视图 ----------
   snapshot(): Snapshot {
     const md = this.monthDef()
     const panel = Object.entries(this.state.player.affinity)
-      .map(([id, value]) => ({ id, value }))
+      .map(([id, value]) => ({ id, value, dead: this.state.deadNpcs.has(id) }))
       .sort((a, b) => b.value - a.value)
-    const total = panel.reduce((s, p) => s + Math.max(0, p.value), 0)
+    // 已故的人不占好感额度，所以面板上的"总量"也只算活着的人
+    const total = panel.reduce((s, p) => s + (p.dead ? 0 : Math.max(0, p.value)), 0)
     const identity = this.script.identities.find((i) => i.id === this.state.player.identityId)
 
     const cluesSnap = this.script.clues
@@ -695,7 +731,7 @@ export class RunEngine {
         outcomeNarrative: this.lastOutcomeNarrative,
         affinityPanel: panel,
         affinityTotal: total,
-        affinityCap: this.script.affinityCap,
+        affinityCap: this.npcAffinityCap(),
         identityName: identity?.name ?? '',
         isEventMonth: this.state.monthRuntime.isEventMonth,
         clues: cluesSnap,
@@ -718,7 +754,7 @@ export class RunEngine {
       finished: false,
       affinityPanel: panel,
       affinityTotal: total,
-      affinityCap: this.script.affinityCap,
+      affinityCap: this.npcAffinityCap(),
       identityName: identity?.name ?? '',
       isEventMonth: this.state.monthRuntime.isEventMonth,
       clues: cluesSnap,
@@ -783,6 +819,7 @@ export class RunEngine {
 
       const choices: { id: string; text: string }[] = [{ id: 'study', text: '学习' }]
       for (const npc of this.script.npcs) {
+        if (this.state.deadNpcs.has(npc.id)) continue
         choices.push({ id: `bond:${npc.id}`, text: `拉近关系 · ${npc.name}` })
       }
       const investigable = listInvestigable(this.script.clues, this.state.player.clueRuntime)

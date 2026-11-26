@@ -27,11 +27,11 @@ export default function GameScreen({ source }: { source: GameSource }) {
       {showPanel && (
         <div className="g-panel">
           <div className="g-panel-head">战力 {view.playerPower}</div>
-          <div className="g-panel-head">好感 {view.affinityTotal}/{view.affinityCap}</div>
+          <div className="g-panel-head">好感总 {view.affinityTotal} · 单人上限 {view.affinityCap}</div>
           {view.affinity.length === 0 && <div className="g-panel-empty">暂无</div>}
           {view.affinity.map((a) => (
             <div key={a.name} className="g-panel-row">
-              <span>{a.name}</span><span>{a.value}</span>
+              <span>{a.name}</span><span>{a.dead ? '已故' : a.value}</span>
             </div>
           ))}
           {view.clues.length > 0 && (
