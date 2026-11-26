@@ -2,7 +2,7 @@
 
 当前阶段：**阶段3 编码实现（古龙线内容迭代中）**
 创建时间：2026-11-24
-最近更新：2026-11-26（古龙线内容 + 死亡处理 + 单人好感上限）
+最近更新：2026-11-26（A/V 三池结构收口 + 因子调概率 + effects 通道；typecheck 通过）
 
 ## 进度
 - [x] GDD 确认
@@ -16,7 +16,9 @@
 - [x] 好感上限改成单人（普通 100 / 龙 80），删除全局总封顶
 - [x] **v9 三池模型（A/V）**：随机互动池 A / 小事件池 B / 世界事件池 C + `worldEvent` 阶段 + `weightModifiers` + 互动选项/节点 `effects`（另一个对话改的，已修好 typecheck 并补文档）
 - [x] 隐患修复：同月①/②去重、`__advance__` 兜底、`docs/month_flow.md` 更新到 v2、删掉 `bondTargetId` 死逻辑
-- [ ] **下一步（用户已定）：继续补古龙线**——加新事件（十一月裂痕 / 一月旧楼夜）+ 让《龙？》《锁链》影响结局 + 往池 B/C 填内容
+- [x] **A/V 三池结构收口（v11）**：`script/types.ts` 删世界因子占位（`FactorDef/FactorGroup/FactorRuntime/factorPool/factorGroups`、`Condition.factorActive`、`Effect.setTerminate`）；新增 `SmallEventDef`（池 B）/`WorldEventDef`（池 C）/`WeightModifier`；`Script` 加 `smallEvents`/`worldEvents`；`InteractNode/InteractChoice` 加 `effects`；`InteractEvent` 加 `weightModifiers`/`opportunityCost`
+- [x] **引擎 v11**：新 phase `worldEvent`（月初抽池 C，可能抽空）；`runSmallEvent` 改从池 B 抽；`pickInteract` 走 `effectiveWeight`（档内自权重）+ `applyTierWeightMods`（档位分布）；`handleInteractChoice` 应用选项/节点 `effects`；`startInteract` 支持 `opportunityCost`；`Snapshot` 暴露 `worldEventId`；`script1.ts` 三条硬编码小事件搬进 `smallEvents`，`worldEvents: []`
+- [ ] **下一步（用户已定）：继续补古龙/封龙随机事件**——情节与机制由用户给，我负责按 `weightModifiers` + `effects` 写法把文本落进 `interactEvents`；之后再做假期月（2 年 2 月）与结局线索联动
 - [ ] 第 3 批：同框（samebox）机制
 - [ ] 第 4 批：私人目标 + 双层目标 + 好感系统精细化
 - [ ] 第 5 批：结局判定 + 局外轮回存档
@@ -47,6 +49,8 @@ cd "C:\Users\34903\game_project\script-br"
 - **唤龙**：期末考试已设为 `tier: 'critical'`，拥有「唤龙」时固定事件多一条【唤龙】（战力+5、g_truth+2、flag `answered_the_call`）。
 - **线索**：《龙？》3 阶段（湖面必得）、《锁链》2 阶段（**封龙专属**：旧楼事件选「伸手去摸」必得）。
 - **crush（在意的人）当前未接入**：`crushId` 永远为空，`it_latenight` 不会进随机池。要做得等古龙线之后重新加（之前 v7 做过一版，被覆盖了）。
+- **因子三分法（按获得途径，权威见 docs/state_model.md）**：身份因子（开局选，如「龙烬余孤」→ `seal`/`ancient`）/ 事件因子（事件获得，如「唤龙」，存 `acquiredFactors`）/ 信息因子（月/好感/战力/flag/目标进度）。**「古龙」「封龙」是普通因子，不是身份**；代码里 `identityFactor` 字段即"普通因子"，命名是历史遗留，暂不改。
+- **A/V 模型**：A=因子，V=事件发生的机会（三个发生点：V1 随机互动池 A / V2 小事件池 B / V3 月初世界事件池 C）。三池都支持 `weightModifiers`（`tierWeights` 改档位分布 / `weightDelta` 改档内权重）。世界因子概念已删除。
 - **引擎单文件**：`engine/RunEngine.ts`（约 950 行）。拆分是为了绕开"单次写入长度限制"，不是设计需要；用有输出上限的模型改它时注意别整份重发，改用 PATCH。
 - 世界因子（家族/旧楼/学业）本批**不激活**。
 - `code\src\` / `code\client\` **保留不删**（用户要求），标注 deprecated 即可，不要改它们。

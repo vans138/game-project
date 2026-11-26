@@ -3,7 +3,7 @@
 ## 基本信息
 - 项目：剧本吃鸡（多人共享剧本 · 轮回养成 · 纯文本）
 - 阶段：阶段3 编码实现（进行中）
-- 当前批次：**古龙线内容迭代（负好感 / 失控 / 唤龙 / 《锁链》 / 死亡 / 单人好感上限）已完成；typecheck 与构建通过**
+- 当前批次：**A/V 三池结构收口（v11）已完成，typecheck 通过**；上一批古龙线内容（负好感 / 失控 / 唤龙 / 《锁链》 / 死亡 / 单人好感上限）已完成
 - 更新日期：2026-11-26
 
 ---
@@ -24,9 +24,13 @@
 5. 第二条线索《锁链》**封龙专属**：旧楼事件选「伸手，隔着门去摸」必得（不再走随机分支），可调查 2 阶段；古龙拿不到。
 
 ### 下一步建议（按用户"继续补古龙线"的方向）
-1. **给古龙线加新月份/新事件**：目前只有 6 个月、5 个固定事件，古龙线的"推进感"主要靠文本。可加 1~2 个事件（十一月裂痕 / 一月旧楼夜）。
-2. **让《龙？》《锁链》真正影响结局**：现在结局固定 `outcomes[0]`，线索查清与否不影响任何东西。可先做最简单的：按线索完成数给不同结局文案。
-3. **（已修）同月①/②重复抽同一事件**：`MonthRuntime.usedEventIds` 去重已落地。
+1. **做古龙/封龙的随机事件（当前主任务）**：情节与机制效果由用户给，AI 只负责按 `weightModifiers` + `effects` 写法把文本创作落进 `interactEvents`（事件挂的是"因子"，用 `requires.identityFactor`）。结构已就绪，见 §九。
+2. **假期月（Y2-2）**：目前只是 `holidaySkip` 占位，假期月的玩法尚未设计，等用户定。
+3. **让《龙？》《锁链》真正影响结局**：现在结局固定 `outcomes[0]`，线索查清与否不影响任何东西。可先做最简单的：按线索完成数给不同结局文案。
+4. **（已修）同月①/②重复抽同一事件**：`MonthRuntime.usedEventIds` 去重已落地；用户决定等事件足够多后再复查体感。
+<<<END>>
+
+<<<PATCH:PROGRESS.md>>>
 
 ### 已知的坑（别踩）
 - `enforceAffinityCap()` **只管正向**：负向不会被裁剪，能到 -50 甚至更低。
@@ -149,7 +153,16 @@ docs/
 - 死者：不再出现在「拉近关系」列表，不再进「龙迫」候选，不再参与失控判定；状态面板显示"已故"。
 - 结局附言："这个学期，XX 没能走到最后。"
 
+### 12. A/V 三池结构收口（v11，2026-11-26 本轮）
+- **`script/types.ts`**：删世界因子占位（`FactorDef` / `FactorGroup` / `FactorRuntime` / `Script.factorPool` / `Script.factorGroups` / `Condition.factorActive` / `Effect.setTerminate`）；新增 `SmallEventDef`（池 B）、`WorldEventDef`（池 C）、`WeightModifier`；`InteractNode`/`InteractChoice` 加 `effects?: Effect[]`；`InteractEvent` 加 `weightModifiers?` / `opportunityCost?: 0|1|2`；`Script` 加 `smallEvents` / `worldEvents`。
+- **`engine/RunEngine.ts`**：`MonthPhase` 加 `worldEvent`；`RunState` 加 `worldEventId` / `firedWorldEvents`；`enterMonth` 调 `rollWorldEvent()`（抽中进 `worldEvent` phase）；新增 `effectiveWeight()`（档内自权重）/ `applyTierWeightMods()`（档位分布）；`pickInteract` 两处改用新工具；`startInteract` 支持 `opportunityCost`；`handleInteractChoice` 三处应用 `effects`（选项 / byMutual-byOneSide 节点 / 单节点）；`runSmallEvent` 改从 `smallEvents` 抽；`buildPhaseView` / `choose` 加 `worldEvent` 分支；`Snapshot` 暴露 `worldEventId`。
+- **`engine/evaluator.ts`**：删 `factorActive` 分支。
+- **`script/script1.ts`**：删 `factorPool` / `factorGroups` 与 import；三条硬编码小事件搬进 `smallEvents`；`worldEvents: []`。
+- **`GameView.ts` / `LocalSource.ts`**：透传 `worldEventId`。
+- **验证**：`npm run typecheck` 通过。因为 `worldEvents: []`、`weightModifiers` 无人使用，**实机行为与 v10 一致**。
+
 ### 11. v9 A/V 三池模型（2026-11-26 落地，由另一个对话改的）
+<<<END>>
 - 因子分三类：**身份因子**（开局身份）/ **事件因子**（事件获得，如唤龙）/ **信息因子**（月/好感/战力/flag/目标进度）。
 - 事件机会三池：
   - **V1 随机互动池 A** `interactEvents`（机会①/②；`opportunityCost` 可覆盖占几次）
